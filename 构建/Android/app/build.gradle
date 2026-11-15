@@ -1,0 +1,100 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 工程在仓库的 构建/Android；往上两级就是仓库根。
+// 这样公开仓库克隆后也能直接构建，不再依赖“工作区/03_掌上阿含”这个层级。
+def repoRoot = rootProject.projectDir.toPath().resolve("../..").normalize().toFile()
+def ksDir = new File(repoRoot, ".tools/android/keystore")
+if (!ksDir.exists()) {
+    // 本地工作区把 .tools 放在仓库外两级，保留旧路径兼容
+    def outsideKs = new File(repoRoot, "../../.tools/android/keystore")
+    if (outsideKs.exists()) ksDir = outsideKs
+}
+def ksPropsFile = new File(ksDir, "agama-keystore.properties")
+def ksProps = new Properties()
+def hasKey = ksPropsFile.exists()
+if (hasKey) {
+    // 必须按 UTF-8 读，默认 load(InputStream) 是 ISO-8859-1，中文密码会坏
+    ksPropsFile.withReader("UTF-8") { ksProps.load(it) }
+}
+
+android {
+    namespace 'io.github.yoshikichi99.agamareader'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "io.github.yoshikichi99.agamareader"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    // 03 自己的 release 钥匙（与 02 的 zcj-release.jks 分开）。
+    // 钥匙和密码都在 .tools/android/keystore/，不进仓库。
+    signingConfigs {
+        if (hasKey) {
+            release {
+                storeFile new File(ksDir, ksProps.getProperty("storeFile"))
+                storePassword ksProps.getProperty("storePassword")
+                keyAlias ksProps.getProperty("keyAlias")
+                keyPassword ksProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (hasKey) {
+                signingConfig signingConfigs.release
+            }
+        }
+        debug {
+            // 打开 WebView DevTools，便于用 cdp 读真机布局（见 工具\cdp_eval.js）
+            // 故意仍用 Android 调试证书：换签名会让 adb install -r 覆盖安装失败，
+            // 卸了重装会丢设备上的笔记与偏好。
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // AGP 8 起 BuildConfig 默认不生成，MainActivity 里用 BuildConfig.DEBUG 判调试包
+    buildFeatures {
+        buildConfig true
+    }
+
+    // 数据文件（原名 *.json.gz）打包前改名 *.gz.bin：
+    // AGP 的 AssetItem.shouldBeUnGzipped() 会按 .gz 后缀自动解压 assets，
+    // 不改名的话 pali.json（3.5 MB gz / 十几 MB 明文）会原样膨胀进 APK。
+    androidResources {
+        noCompress += ["bin"]
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+// ---- 把前端 proto 同步成 assets ----
+def protoDir = new File(repoRoot, "前端/proto")
+def genAssets = layout.buildDirectory.dir("gen/assets")
+
+tasks.register("syncAssets", Sync) {
+    from(protoDir) {
+        exclude "_*.js"        // 开发自测脚本
+        exclude "_phone.html"  // 截图用的 iframe 壳
+        // 躲开 AGP 的 .gz 自动解压
+        rename { String name -> name.endsWith(".gz") ? name + ".bin" : name }
+    }
+    into genAssets
+}
+
+android.sourceSets.main.assets.srcDirs += genAssets.get().asFile
+tasks.named("preBuild").configure { dependsOn "syncAssets" }

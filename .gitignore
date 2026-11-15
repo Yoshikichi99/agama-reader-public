@@ -1,0 +1,30 @@
+# 构建产物
+构建/Android/.gradle/
+构建/Android/app/build/
+构建/Android/local.properties
+*.apk
+
+# 签名与本地配置
+.tools/
+*.jks
+*.keystore
+keystore.properties
+agama-keystore.properties
+
+# 内部过程文件（公开库不收录）
+工具/
+素材/
+佛画/
+参考图/
+数据/
+验证/
+临时/
+debug/
+构建/Android/工具/
+
+# 开发自测
+前端/proto/_*.js
+前端/proto/_phone.html
+
+# 备份
+*.bak
