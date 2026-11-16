@@ -74,7 +74,7 @@
   }
   function pickReadFont() {
     if (window.ARIO && window.ARIO.pickFont) window.ARIO.pickFont();
-    else toast('此環境不支援選字體');
+    else toast('此環境不支持選字體');
   }
   window.ARIO_onFont = function (name, b64) {
     if (!b64) { toast('字體讀取失敗'); return; }
@@ -86,7 +86,9 @@
       savePrefs(p);
       if ((location.hash || '').indexOf('#/settings') === 0) viewSettings();
       toast('已套用字體：' + (name || '自訂'));
-    }).catch(function () { toast('字體格式不支援'); });
+    }).catch(function () {
+      toast('字體格式不支持：請用 TTF / OTF / WOFF / WOFF2（TTC 字體集暫不支持）');
+    });
   };
 
   /* 原生在页面加载完成、系统深浅色切换时回报；比 WebView 的 matchMedia 可靠 */
