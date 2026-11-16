@@ -53,6 +53,7 @@ public class MainActivity extends Activity {
 
     private static final int REQ_EXPORT = 1001;
     private static final int REQ_IMPORT = 1002;
+    private static final int REQ_FONT = 1003;
 
     private WebView web;
     private volatile boolean volTurn = false;   // 音量键翻页开关
@@ -325,6 +326,19 @@ public class MainActivity extends Activity {
                 }
             });
         }
+
+        @JavascriptInterface
+        public void pickFont() {        runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            try {
+                startActivityForResult(i, REQ_FONT);
+            } catch (Exception e) {
+                toastShort("沒有可用的檔案選擇程式");
+            }
+        });
+        }
     }
 
     @Override
@@ -353,7 +367,35 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 toastShort("讀取失敗：" + e.getMessage());
             }
+        } else if (req == REQ_FONT) {
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new IOException("無法讀取");
+                byte[] bytes = readBytes(in, 12 * 1024 * 1024);
+                String name = "font.ttf";
+                try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int ci = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                        if (ci >= 0) name = c.getString(ci);
+                    }
+                }
+                final String b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
+                final String js = "window.ARIO_onFont(" + JSONObject.quote(name) + "," + JSONObject.quote(b64) + ")";
+                web.post(() -> web.evaluateJavascript(js, null));
+            } catch (Exception e) {
+                toastShort("字體讀取失敗：" + e.getMessage());
+            }
         }
+    }
+
+    private static byte[] readBytes(InputStream in, int max) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            if (bos.size() + n > max) throw new IOException("字體檔案超過 12 MB");
+            bos.write(buf, 0, n);
+        }
+        return bos.toByteArray();
     }
 
     private static String readAll(InputStream in) throws IOException {

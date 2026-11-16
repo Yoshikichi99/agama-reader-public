@@ -10,6 +10,84 @@
   var LANG_KEY = 'ar.lang';
   var scrollMemo = {};      // 非阅读页的滚动位置：首页→设置→返回时恢复
   var lastRoute = '';
+  var customFontName = '';
+  var customFontLoaded = false;
+
+  /* 自定义阅读字体存 IndexedDB（字体可能几 MB，localStorage 放不下） */
+  var FONT_DB = 'ar.fonts';
+  function fontDb() {
+    return new Promise(function (resolve, reject) {
+      var r = indexedDB.open(FONT_DB, 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('fonts', { keyPath: 'id' }); };
+      r.onsuccess = function () { resolve(r.result); };
+      r.onerror = function () { reject(r.error); };
+    });
+  }
+  function fontGet() {
+    return fontDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t = db.transaction('fonts', 'readonly').objectStore('fonts').get('read');
+        t.onsuccess = function () { resolve(t.result || null); };
+        t.onerror = function () { reject(t.error); };
+      });
+    }).catch(function () { return null; });
+  }
+  function fontPut(name, data) {
+    return fontDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t = db.transaction('fonts', 'readwrite').objectStore('fonts').put({ id: 'read', name: name, data: data });
+        t.onsuccess = function () { resolve(); };
+        t.onerror = function () { reject(t.error); };
+      });
+    });
+  }
+  function fontDel() {
+    return fontDb().then(function (db) {
+      return new Promise(function (resolve) {
+        db.transaction('fonts', 'readwrite').objectStore('fonts').delete('read');
+        resolve();
+      });
+    }).catch(function () { });
+  }
+  function b64Bytes(b64) {
+    var s = atob(String(b64 || '')), a = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+    return a;
+  }
+  function applyCustomFont(name, b64) {
+    return new Promise(function (resolve, reject) {
+      if (!window.FontFace || !document.fonts) return reject(new Error('no FontFace'));
+      var face = new FontFace('ARReadFont', b64Bytes(b64).buffer);
+      face.load().then(function (f) {
+        document.fonts.add(f);
+        customFontName = name || '自定义字体';
+        customFontLoaded = true;
+        resolve();
+      }, reject);
+    });
+  }
+  function loadCustomFont() {
+    return fontGet().then(function (rec) {
+      if (!rec || !rec.data) return null;
+      return applyCustomFont(rec.name, rec.data);
+    }).catch(function () { return null; });
+  }
+  function pickReadFont() {
+    if (window.ARIO && window.ARIO.pickFont) window.ARIO.pickFont();
+    else toast('此環境不支援選字體');
+  }
+  window.ARIO_onFont = function (name, b64) {
+    if (!b64) { toast('字體讀取失敗'); return; }
+    fontPut(name, b64).then(function () {
+      return applyCustomFont(name, b64);
+    }).then(function () {
+      var p = readPrefs();
+      p.font = 'custom';
+      savePrefs(p);
+      if ((location.hash || '').indexOf('#/settings') === 0) viewSettings();
+      toast('已套用字體：' + (name || '自訂'));
+    }).catch(function () { toast('字體格式不支援'); });
+  };
 
   /* 原生在页面加载完成、系统深浅色切换时回报；比 WebView 的 matchMedia 可靠 */
   window.__sysDark = null;
@@ -249,6 +327,101 @@
     return out.sort(function (a, b) { return a.t < b.t ? 1 : -1; });
   }
 
+  /* ---------- 文件夹：收藏 / 笔记 / 划线 各自独立、可嵌套 ---------- */
+  var K_FOLDERS = 'ar.folders', K_ITEM_FOLDER = 'ar.itemfolder';
+  var FOLDER_TYPE_NAME = { fav: '收藏', note: '筆記', hl: '劃線' };
+
+  function folderTypeOf(kind) { return kind === 'seg' || kind === 'post' ? 'note' : kind; }
+
+  function folderTree(type) {
+    var all = readStore(K_FOLDERS, {});
+    var arr = all[type];
+    return Array.isArray(arr) ? arr : [];
+  }
+  function saveFolderTree(type, arr) {
+    var all = readStore(K_FOLDERS, {});
+    all[type] = arr || [];
+    writeStore(K_FOLDERS, all);
+  }
+  function folderById(type, id) {
+    return folderTree(type).filter(function (f) { return f.id === id; })[0] || null;
+  }
+  function folderPath(type, id) {
+    var p = [], guard = 0;
+    while (id && guard++ < 50) {
+      var f = folderById(type, id);
+      if (!f) break;
+      p.unshift(f.name);
+      id = f.parent || '';
+    }
+    return p.join(' / ');
+  }
+  function folderChildren(type, parent) {
+    return folderTree(type).filter(function (f) { return (f.parent || '') === (parent || ''); });
+  }
+  function folderSubtree(type, id) {
+    var out = {}, arr = folderTree(type);
+    function add(x) {
+      out[x] = true;
+      arr.forEach(function (f) { if ((f.parent || '') === x) add(f.id); });
+    }
+    add(id);
+    return out;
+  }
+  function itemKey(kind, it) {
+    if (kind === 'fav') return it.k;
+    if (kind === 'note' || kind === 'seg' || kind === 'post') {
+      return it.k + '\u0001' + (kind === 'post' ? 'post' : it.b);
+    }
+    return it.k + '\u0001' + it.b + '\u0001' + it.s + '\u0001' + it.e;
+  }
+  function itemFolder(type, key) {
+    var all = readStore(K_ITEM_FOLDER, {});
+    return (all[type] || {})[key] || '';
+  }
+  function setItemFolder(type, key, folder) {
+    var all = readStore(K_ITEM_FOLDER, {});
+    var m = all[type] || (all[type] = {});
+    if (folder) m[key] = folder; else delete m[key];
+    writeStore(K_ITEM_FOLDER, all);
+  }
+  function matchesFolder(type, kind, it, folder) {
+    if (folder === 'all') return true;
+    var key = itemKey(kind, it), cur = itemFolder(type, key);
+    if (folder === 'root') return !cur;
+    return !!folderSubtree(type, folder)[cur];
+  }
+  function folderItems(type, id) {
+    var sub = folderSubtree(type, id), all = readStore(K_ITEM_FOLDER, {})[type] || {};
+    return Object.keys(all).filter(function (key) { return !!sub[all[key]]; });
+  }
+  function removeItemByKey(type, key) {
+    var p = key.split('\u0001');
+    if (type === 'fav') { unfav(p[0]); return; }
+    if (type === 'note') {
+      if (p[1] === 'post') delPost(p[0]);
+      else setSegNote(p[0], +p[1], '');
+      return;
+    }
+    if (type === 'hl') {
+      var m = readStore(K_HL, {}), bucket = m[p[0]], arr = bucket && bucket[+p[1]];
+      if (!arr) return;
+      var list = (Array.isArray(arr) ? arr : [arr]).filter(function (r) {
+        return !((r.s == null ? 0 : r.s) === +p[2] && (r.e == null ? -1 : r.e) === +p[3]);
+      });
+      if (list.length) bucket[+p[1]] = list; else delete bucket[+p[1]];
+      if (!Object.keys(bucket).length) delete m[p[0]];
+      writeStore(K_HL, m);
+    }
+  }
+  function cleanItemFolder(type, key) {
+    var all = readStore(K_ITEM_FOLDER, {});
+    if (all[type] && all[type][key]) {
+      delete all[type][key];
+      writeStore(K_ITEM_FOLDER, all);
+    }
+  }
+
   function allPosts() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
@@ -390,8 +563,16 @@
    */
   function handleAnyImport(text) {
     var p = null;
-    try { p = JSON.parse(text); } catch (e) { toast('檔案不是有效的 JSON'); return; }
+    try { p = JSON.parse(text); } catch (e) {
+      var md = parseNoteMarkdown(text);
+      if (md.length) { importNotePack({ notes: md, meta: { name: '手寫筆記' } }); return; }
+      toast('檔案不是有效的 JSON'); return;
+    }
     if (!p || typeof p !== 'object') { toast('檔案格式不對'); return; }
+    if (p.kind === 'agama-note-pack' || Array.isArray(p.notes)) {
+      importNotePack(p);
+      return;
+    }
     if (p.kind === 'agama-pali-zh') {
       importPaliZhPack(p);
       return;
@@ -465,6 +646,57 @@
       else if (e.kind === 'fav') { setFav(a.k, e.tag); n++; }
     });
     return n;
+  }
+
+  /* 简单手写笔记包 / AI 批量包：只认 k、b（可选）、text，不强迫用户学内部结构 */
+  function importNotePack(p) {
+    var n = 0;
+    (p.notes || []).forEach(function (x) {
+      if (!x || !x.k || !x.text) return;
+      var k = String(x.k);
+      if (x.post === true || x.b == null) {
+        savePostRaw(k, String(x.text), x.t);
+        if (x.folder) setItemFolder('note', k + '\u0001post', x.folder);
+        n++;
+      } else {
+        var b = +x.b;
+        setSegNote(k, b, String(x.text), x.quote || '', x.fp || '');
+        if (x.folder) setItemFolder('note', k + '\u0001' + b, x.folder);
+        n++;
+      }
+    });
+    if (!n) { toast('筆記包裡沒有可導入的內容'); return; }
+    toast('已導入 ' + n + ' 條筆記');
+    if ((location.hash || '').indexOf('#/notes') === 0) viewNotes();
+  }
+
+  /* 手写模板：
+   * ## SA.1
+   * ### 第 6 段
+   * 笔记内容……
+   * ## SA.8
+   * （没有“### 第N段”就作为经后笔记）
+   */
+  function parseNoteMarkdown(text) {
+    var out = [], key = '', b = null, buf = [];
+    function flush() {
+      var body = buf.join('\n').trim();
+      if (key && body) {
+        if (b == null) out.push({ k: key, post: true, text: body });
+        else out.push({ k: key, b: b, text: body });
+      }
+      buf = [];
+    }
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var m = line.match(/^##\s+([A-Za-z]{2,3}\.\d+(?:\.\d+)*)\s*$/);
+      if (m) { flush(); key = m[1]; b = null; return; }
+      var bm = line.match(/^###\s*第\s*(\d+)\s*段/);
+      if (bm) { flush(); b = +bm[1]; return; }
+      if (line.charAt(0) === '#') return;
+      buf.push(line);
+    });
+    flush();
+    return out;
   }
 
   function savePostRaw(k, h, ts) {
@@ -1371,15 +1603,20 @@
   }
 
   function alignPaliPairs(ps, zs) {
-    for (var guard = 0; guard < 2; guard++) {
-      if (ps.length === zs.length) {
-        return ps.map(function (p, i) { return [p, zs[i]]; });
-      }
-      if (zs.length === ps.length + 1) { zs = mergeShortest(zs); continue; }
-      if (ps.length === zs.length + 1) { zs = splitLongestZh(zs); continue; }
-      break;
+    // 只用“句数完全相同”的段落做句级配对；
+    // 不为了凑数去拆/并汉译句子——那是拿汉语的分段反过来套巴利语。
+    if (ps.length === zs.length) {
+      return ps.map(function (p, i) { return [p, zs[i]]; });
     }
     return null;
+  }
+
+  function paliPairMismatch(p, z) {
+    var a = String(p || '').trim(), b = String(z || '').trim();
+    if (!a || !b) return false;
+    // 源包里有些 peyyāla/缩写标记被整段汉译顶替；不把这种硬配展示成“逐句直译”
+    if (/peyyāl|suttaṃ|vaggo|nipāto|paṇṇāsaka|saṃyuttaṃ|kathā/i.test(a) && b.length > 80) return true;
+    return a.length < 30 && b.length > a.length * 4;
   }
 
   function paliLineHTML(t, z) {
@@ -1391,10 +1628,18 @@
       var pairs = alignPaliPairs(ps, zhSentences(z));
       if (pairs && pairs.length) {
         return pairs.map(function (x) {
+          if (paliPairMismatch(x[0], x[1])) {
+            return '<div class="plp"><p class="pl">' + esc(x[0]) + '</p>' +
+              '<p class="pz mismatch">（原文此處為縮略語，未逐句配漢譯）</p></div>';
+          }
           return '<div class="plp"><p class="pl">' + esc(x[0]) + '</p>' +
             '<p class="pz">' + esc(x[1]) + '</p></div>';
         }).join('');
       }
+    }
+    if (paliPairMismatch(t, z)) {
+      return '<p class="pl">' + esc(t) + '</p>' +
+        '<p class="pz mismatch">（原文此處為縮略語，未逐句配漢譯）</p>';
     }
     return '<p class="pl">' + esc(t) + '</p>' +
       (z ? '<p class="pz">' + esc(z) + '</p>' : '');
@@ -1826,7 +2071,7 @@
   }
   /* ---------- 阅读偏好：字号 / 行距 / 主题 / 标记 / 常亮 / 翻页 ---------- */
   var K_PREFS = 'ar.readprefs';
-  var PREFS_DEF = { fs: 19, lh: 2.0, theme: 'light', marks: true, notes: true, hl: true, awake: true, paging: 'scroll', trans: false, transSet: 'ai2', paliZh: true, volTurn: false, anim: true };
+  var PREFS_DEF = { fs: 19, lh: 2.0, theme: 'light', marks: true, notes: true, hl: true, awake: true, paging: 'scroll', trans: false, transSet: 'ai2', paliZh: true, volTurn: false, anim: true, font: 'default' };
 
   function readPrefs() {
     return Object.assign({}, PREFS_DEF, readStore(K_PREFS, {}));
@@ -1850,6 +2095,10 @@
     var dark = p.theme === 'dark' || (p.theme === 'system' && sysDark);
     document.documentElement.classList.toggle('dark', dark);
     document.body.classList.toggle('dark', dark);
+    var ff = 'var(--serif)';
+    if (p.font === 'system') ff = 'system-ui, -apple-system, "Noto Sans CJK SC", "PingFang SC", sans-serif';
+    else if (p.font === 'custom' && customFontLoaded) ff = '"ARReadFont", var(--serif)';
+    document.documentElement.style.setProperty('--read-font', ff);
     document.body.classList.toggle('no-mark', !p.marks);
     document.body.classList.toggle('no-note', !p.notes);
     document.body.classList.toggle('no-hl', !p.hl);
@@ -1881,7 +2130,8 @@
    * 全部只在本机（localStorage）。换机、重装前导一份出来最稳妥。
    */
   var UD_MAPS = { notes: 'ar.sn', favorites: 'ar.fav', highlights: 'ar.hl',
-                  translations: 'ar.tr', palizh: 'ar.palizh', history: 'ar.hist' };
+                  translations: 'ar.tr', palizh: 'ar.palizh', history: 'ar.hist',
+                  folders: 'ar.folders', itemfolders: 'ar.itemfolder' };
 
   function collectUserData() {
     var out = { notes: {}, favorites: {}, highlights: {}, translations: {}, palizh: {}, history: {} };
@@ -2611,7 +2861,7 @@
   function bindSwipeNav(prev, next) {
     window.__suttaNav = function (d) {
       var k = d > 0 ? next : prev;
-      if (!k) { toast(d > 0 ? '已到此經的末尾' : '已經是前一經'); return false; }
+      if (!k) { toast(d > 0 ? '已到本部經的最後一經' : '已到本部經的第一經'); return false; }
       pendingSlide = d > 0 ? 1 : -1;
       // 巴利入口进来时要带着 via=pali，否则下一经会退回汉译版式、返回也回汉译目录
       location.hash = '#/k/' + encodeURIComponent(k) + (paliMode ? '?via=pali' : '');
@@ -3677,7 +3927,7 @@
       '<ul>' +
       '<li>巴利語卡片：修正首行縮進，經號標題移到 AI 直譯說明下方；巴利入口的漢譯卡片可收起。</li>' +
       '<li>修復「跟隨系統」深色／淺色主題不生效。</li>' +
-      '<li>閱讀頁上一經／下一經改按經號自然順序；到末尾提示「已到此經的末尾」。</li>' +
+      '<li>閱讀頁上一經／下一經改按經號自然順序；到本部最後一經提示「已到本部經的最後一經」。</li>' +
       '<li>從閱讀頁回到目錄時，剛才閱讀的經號保持高亮。</li>' +
       '<li>修正部分段落以「；」「，」等標點開頭的問題。</li>' +
       '<li>閱讀頁默認隱藏狀態欄，退出恢復；頂部下滑可臨時調出。</li>' +
@@ -3923,14 +4173,183 @@
 
   /* ---------- 我的笔记 / 划线 / 收藏 ---------- */
 
-  var notesState = { manage: false, sel: {} };
-  var hlState = { manage: false, sel: {} };
-  var favState = { manage: false, sel: {} };
+  var notesState = { manage: false, sel: {}, folder: 'all' };
+  var hlState = { manage: false, sel: {}, folder: 'all' };
+  var favState = { manage: false, sel: {}, folder: 'all' };
   var manageBlockClick = 0;
+
+  function folderLabel(type, id) {
+    if (id === 'all') return '全部';
+    if (id === 'root') return '未分類';
+    return folderPath(type, id) || '未分類';
+  }
+  function folderBarHTML(type, state) {
+    return '<div class="foldbar"><span class="fb-name">' + esc(folderLabel(type, state.folder)) +
+      '</span><span class="fb-pick" id="fbPick">文件夾 ›</span></div>';
+  }
+  function bindFolderBar(type, state, view) {
+    var b = document.getElementById('fbPick');
+    if (b) b.addEventListener('click', function () {
+      showFolderSheet(type, state, view, false);
+    });
+  }
+
+  function folderRowsHTML(type, forMove) {
+    var out = '';
+    if (!forMove) out += '<button class="fold-row" data-fid="all">全部</button>';
+    out += '<button class="fold-row" data-fid="root">未分類</button>';
+    function walk(parent, depth) {
+      folderChildren(type, parent).forEach(function (f) {
+        out += '<button class="fold-row" data-fid="' + esc(f.id) + '" style="padding-left:' +
+          (14 + depth * 18) + 'px">' + esc(f.name) + '</button>';
+        walk(f.id, depth + 1);
+      });
+    }
+    walk('', 0);
+    return out;
+  }
+
+  function showFolderSheet(type, state, view, forMove) {
+    var mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    mask.innerHTML = '<div class="sheet"><div class="hd"><span class="t">' +
+      (forMove ? '移動到文件夾' : '文件夾') + '</span><span class="x" data-close>×</span></div>' +
+      '<div class="b"><div class="fold-list">' + folderRowsHTML(type, forMove) + '</div>' +
+      '<div class="btns">' + (forMove ? '' : '<span class="btn" id="foldNew">新建文件夾</span>' +
+        '<span class="btn" id="foldManage">管理文件夾</span>') +
+      '<span class="btn ghost" data-close>取消</span></div></div></div>';
+    mountSheet(mask);
+    mask.addEventListener('click', function (ev) {
+      if (ev.target === mask || ev.target.hasAttribute('data-close')) mask.remove();
+    });
+    Array.prototype.forEach.call(mask.querySelectorAll('[data-fid]'), function (el) {
+      el.addEventListener('click', function () {
+        var id = el.getAttribute('data-fid');
+        if (forMove) {
+          var keys = state.__moveKeys || [];
+          keys.forEach(function (k) { setItemFolder(type, k, id === 'root' ? '' : id); });
+          state.manage = false;
+          state.sel = {};
+          mask.remove();
+          view();
+          toast('已移動 ' + keys.length + ' 條');
+        } else {
+          state.folder = id;
+          mask.remove();
+          view();
+        }
+      });
+    });
+    var n = mask.querySelector('#foldNew');
+    if (n) n.addEventListener('click', function () { mask.remove(); showFolderCreate(type, state, view); });
+    var m = mask.querySelector('#foldManage');
+    if (m) m.addEventListener('click', function () { mask.remove(); showFolderManage(type, state, view); });
+  }
+
+  function showFolderCreate(type, state, view, parent) {
+    var mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    var parentOpts = '<option value="">（根目錄）</option>';
+    function walk(p, depth) {
+      folderChildren(type, p).forEach(function (f) {
+        parentOpts += '<option value="' + esc(f.id) + '">' + esc('　'.repeat(depth) + f.name) + '</option>';
+        walk(f.id, depth + 1);
+      });
+    }
+    walk('', 0);
+    mask.innerHTML = '<div class="sheet"><div class="hd"><span class="t">新建文件夾</span>' +
+      '<span class="x" data-close>×</span></div><div class="b">' +
+      '<input id="foldName" type="text" placeholder="文件夾名稱" autocomplete="off">' +
+      '<p class="dim">上級文件夾</p><select id="foldParent" class="fold-select">' + parentOpts + '</select>' +
+      '<div class="btns"><span class="btn" data-close>取消</span><span class="btn pri" id="foldSave">建立</span></div>' +
+      '</div></div>';
+    mountSheet(mask);
+    if (parent) mask.querySelector('#foldParent').value = parent;
+    mask.addEventListener('click', function (ev) {
+      if (ev.target === mask || ev.target.hasAttribute('data-close')) mask.remove();
+    });
+    mask.querySelector('#foldSave').addEventListener('click', function () {
+      var name = mask.querySelector('#foldName').value.trim();
+      if (!name) { toast('請輸入名稱'); return; }
+      var arr = folderTree(type);
+      arr.push({ id: 'f' + Date.now() + Math.floor(Math.random() * 1000), name: name,
+        parent: mask.querySelector('#foldParent').value || '' });
+      saveFolderTree(type, arr);
+      mask.remove();
+      view();
+      toast('已建立文件夾');
+    });
+  }
+
+  function showFolderManage(type, state, view) {
+    var mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    var out = '<div class="fold-list">';
+    if (!folderTree(type).length) out += '<p class="dim">還沒有文件夾。</p>';
+    function walk(parent, depth) {
+      folderChildren(type, parent).forEach(function (f) {
+        var n = folderItems(type, f.id).length;
+        out += '<div class="fold-manage" style="padding-left:' + (depth * 18) + 'px">' +
+          '<span>' + esc(f.name) + (n ? '（' + n + '）' : '') + '</span>' +
+          '<span class="fold-del" data-del-fold="' + esc(f.id) + '">刪除</span></div>';
+        walk(f.id, depth + 1);
+      });
+    }
+    walk('', 0);
+    out += '</div>';
+    mask.innerHTML = '<div class="sheet"><div class="hd"><span class="t">管理文件夾</span>' +
+      '<span class="x" data-close>×</span></div><div class="b">' + out +
+      '<div class="btns"><span class="btn" id="foldNew2">新建文件夾</span>' +
+      '<span class="btn ghost" data-close>完成</span></div></div></div>';
+    mountSheet(mask);
+    mask.addEventListener('click', function (ev) {
+      if (ev.target === mask || ev.target.hasAttribute('data-close')) mask.remove();
+    });
+    mask.querySelector('#foldNew2').addEventListener('click', function () {
+      mask.remove(); showFolderCreate(type, state, view);
+    });
+    Array.prototype.forEach.call(mask.querySelectorAll('[data-del-fold]'), function (el) {
+      el.addEventListener('click', function () {
+        var id = el.getAttribute('data-del-fold');
+        mask.remove();
+        deleteFolderFlow(type, state, view, id);
+      });
+    });
+  }
+
+  function deleteFolderFlow(type, state, view, id) {
+    var name = (folderById(type, id) || {}).name || '';
+    var sub = folderSubtree(type, id);
+    var keys = folderItems(type, id);
+    var descendants = Object.keys(sub).filter(function (x) { return x !== id; });
+    confirmSheet('刪除文件夾', '「' + name + '」' +
+      (keys.length ? '內有 ' + keys.length + ' 條，會先移到「未分類」。' : '會被刪除。'),
+      '刪除文件夾', function () {
+        var arr = folderTree(type).filter(function (f) { return !sub[f.id]; });
+        saveFolderTree(type, arr);
+        if (sub[state.folder]) state.folder = 'all';
+        keys.forEach(function (k) { setItemFolder(type, k, ''); });
+        if (!keys.length) { view(); toast('已刪除文件夾'); return; }
+        confirmSheet('文件夾內還有 ' + keys.length + ' 條',
+          '要連同這些條目一起刪除嗎？刪除後不能恢復。',
+          '連同刪除', function () {
+            keys.forEach(function (k) { removeItemByKey(type, k); cleanItemFolder(type, k); });
+            view(); toast('已刪除文件夾與 ' + keys.length + ' 條');
+          });
+        // 第二个弹窗关闭/取消时，第一层已经把条目移到未分類
+      });
+  }
+
+  function moveSelected(type, state, view, keys) {
+    if (!keys.length) { toast('請先選擇條目'); return; }
+    state.__moveKeys = keys;
+    showFolderSheet(type, state, view, true);
+  }
 
   function manageBarHTML(n) {
     return '<div class="hist-bar" id="mBar">' +
       '<span class="hb" id="mAll">全選</span>' +
+      '<span class="hb" id="mMove">移動</span>' +
       '<span class="hb danger" id="mDel">刪除' + (n ? ' (' + n + ')' : '') + '</span>' +
       '<span class="hb" id="mCancel">取消</span></div>';
   }
@@ -4037,6 +4456,9 @@
       items.push({ kind: 'seg', k: s.k, b: s.b, h: s.h, x: s.x, t: s.t });
     });
     items.sort(function (a, b) { return a.t < b.t ? 1 : -1; });
+    items = items.filter(function (it) {
+      return matchesFolder('note', it.kind, it, notesState.folder);
+    });
 
     var body = items.length ? items.map(function (it, idx) {
       var href = '#/k/' + encodeURIComponent(it.k) + '?back=notes' +
@@ -4058,6 +4480,7 @@
     paint(bar('我的筆記', '#/',
       '<span class="act" id="mManage">' + (notesState.manage ? '完成' : '管理') + '</span>') +
       '<div class="app' + (notesState.manage ? ' manage' : '') + '">' +
+      folderBarHTML('note', notesState) +
       '<div class="list-h">共 ' + items.length + ' 條</div>' + body + '</div>' +
       (notesState.manage ? manageBarHTML(selN) : ''));
 
@@ -4069,15 +4492,26 @@
         ids.forEach(function (id) {
           var it = items[+id];
           if (!it) return;
+          cleanItemFolder('note', itemKey(it.kind, it));
           if (it.kind === 'post') delPost(it.k);
           else setSegNote(it.k, it.b, '');
         });
       }
     });
+    bindFolderBar('note', notesState, viewNotes);
+    var mv = document.getElementById('mMove');
+    if (mv) mv.addEventListener('click', function () {
+      var keys = Object.keys(notesState.sel).map(function (i) {
+        var it = items[+i]; return it ? itemKey(it.kind, it) : '';
+      }).filter(Boolean);
+      moveSelected('note', notesState, viewNotes, keys);
+    });
   }
 
   function viewHighlights() {
-    var all = allHl();
+    var all = allHl().filter(function (h) {
+      return matchesFolder('hl', 'hl', h, hlState.folder);
+    });
     var byKey = {};
     all.forEach(function (h) { (byKey[h.k] || (byKey[h.k] = [])).push(h); });
     var keys = Object.keys(byKey).sort(function (a, b) {
@@ -4103,6 +4537,7 @@
     paint(bar('我的劃線', '#/',
       '<span class="act" id="mManage">' + (hlState.manage ? '完成' : '管理') + '</span>') +
       '<div class="app' + (hlState.manage ? ' manage' : '') + '">' +
+      folderBarHTML('hl', hlState) +
       '<div class="list-h">共 ' + all.length + ' 處</div>' + body + '</div>' +
       (hlState.manage ? manageBarHTML(selN) : ''));
 
@@ -4115,6 +4550,7 @@
         ids.forEach(function (id) {
           var h = all[+id];
           if (!h) return;
+          cleanItemFolder('hl', itemKey('hl', h));
           var bucket = m[h.k];
           if (!bucket) return;
           var arr = bucket[h.b];
@@ -4130,10 +4566,20 @@
         writeStore(K_HL, m);
       }
     });
+    bindFolderBar('hl', hlState, viewHighlights);
+    var mv = document.getElementById('mMove');
+    if (mv) mv.addEventListener('click', function () {
+      var keys = Object.keys(hlState.sel).map(function (i) {
+        var h = all[+i]; return h ? itemKey('hl', h) : '';
+      }).filter(Boolean);
+      moveSelected('hl', hlState, viewHighlights, keys);
+    });
   }
 
   function viewFavorites() {
-    var all = allFavs();
+    var all = allFavs().filter(function (f) {
+      return matchesFolder('fav', 'fav', f, favState.folder);
+    });
     var body = all.length ? all.map(function (f) {
       return '<div class="lrow fav manage-row' + (favState.sel[f.k] ? ' sel' : '') +
         '" data-mid="' + esc(f.k) + '" data-open="' + esc(f.k) + '">' +
@@ -4152,6 +4598,7 @@
     paint(bar('我的收藏', '#/',
       '<span class="act" id="mManage">' + (favState.manage ? '完成' : '管理') + '</span>') +
       '<div class="app' + (favState.manage ? ' manage' : '') + '">' +
+      folderBarHTML('fav', favState) +
       '<div class="list-h">共 ' + all.length + ' 條</div>' + body + '</div>' +
       (favState.manage ? manageBarHTML(selN) : ''));
 
@@ -4175,7 +4622,14 @@
       rowSel: '.manage-row',
       ids: all.map(function (f) { return f.k; }),
       label: '收藏',
-      remove: function (ids) { ids.forEach(unfav); }
+      remove: function (ids) {
+        ids.forEach(function (k) { cleanItemFolder('fav', k); unfav(k); });
+      }
+    });
+    bindFolderBar('fav', favState, viewFavorites);
+    var mv = document.getElementById('mMove');
+    if (mv) mv.addEventListener('click', function () {
+      moveSelected('fav', favState, viewFavorites, Object.keys(favState.sel));
     });
   }
 
@@ -4296,6 +4750,17 @@
       '<a class="seg-i' + (cur === 'trad' ? ' on' : '') + '" data-lang="trad">繁體</a>' +
       '</span></div>' +
       '<div class="set-note">經文以繁體存儲，簡體為即時轉換；切換後立即生效，不需重新載入。</div>' +
+      '<div class="set-row"><span class="k">閱讀字體</span>' +
+      '<span class="seg">' +
+      '<a class="seg-i' + (prefs.font !== 'system' && !(prefs.font === 'custom' && customFontLoaded) ? ' on' : '') + '" data-font="default">默認</a>' +
+      '<a class="seg-i' + (prefs.font === 'system' ? ' on' : '') + '" data-font="system">系統</a>' +
+      '<a class="seg-i' + (prefs.font === 'custom' && customFontLoaded ? ' on' : '') + '" data-font="custom">自訂</a>' +
+      '</span></div>' +
+      '<div class="set-note">只影響閱讀頁；缺字會回落默認字體。</div>' +
+      '<div class="set-row link" id="fontPick"><span class="k">導入字體文件' +
+      '<span class="sub2">' + (customFontLoaded ? esc(customFontName) : '未導入') + '</span></span>' +
+      '<span class="v">' + (customFontLoaded ? '更換 ›' : '›') + '</span></div>' +
+      (customFontLoaded ? '<div class="set-row link" id="fontClear"><span class="k">移除自訂字體</span><span class="v">›</span></div>' : '') +
 
       '<div class="set-h">閱讀</div>' +
       '<div class="set-row"><span class="k">主題</span><span class="seg">' +
@@ -4350,6 +4815,37 @@
         AR.setLang(l);
         viewSettings();
         toast(l === 'trad' ? '已切換為繁體' : '已切換為簡體');
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-font]'), function (el) {
+      el.addEventListener('click', function () {
+        var f = el.getAttribute('data-font');
+        var p2 = readPrefs();
+        if (f === 'custom' && !customFontLoaded) {
+          toast('請選擇一個字體文件');
+          pickReadFont();
+          return;
+        }
+        p2.font = f;
+        savePrefs(p2);
+        toast(f === 'system' ? '閱讀字體：系統' :
+          (f === 'custom' ? '閱讀字體：自訂' : '閱讀字體：默認'));
+        viewSettings();
+      });
+    });
+    var fp = document.getElementById('fontPick');
+    if (fp) fp.addEventListener('click', function () { pickReadFont(); });
+    var fc = document.getElementById('fontClear');
+    if (fc) fc.addEventListener('click', function () {
+      fontDel().then(function () {
+        customFontLoaded = false;
+        customFontName = '';
+        var p2 = readPrefs();
+        p2.font = 'default';
+        savePrefs(p2);
+        viewSettings();
+        toast('已移除自訂字體');
       });
     });
 
@@ -4498,6 +4994,8 @@
   applyPrefs();
 
   AR.boot().then(function () {
+    return loadCustomFont();
+  }).then(function () {
     route();
     bootEl.classList.add('hide');
     setTimeout(function () { bootEl.remove(); }, 400);
