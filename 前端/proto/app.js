@@ -8,6 +8,15 @@
   var ORDER = {};          // 部 -> 按目录顺序排好的经号
   var LAST = 'ar.last';
   var LANG_KEY = 'ar.lang';
+  var scrollMemo = {};      // 非阅读页的滚动位置：首页→设置→返回时恢复
+  var lastRoute = '';
+
+  /* 原生在页面加载完成、系统深浅色切换时回报；比 WebView 的 matchMedia 可靠 */
+  window.__sysDark = null;
+  window.ARIO_onSystemDark = function (dark) {
+    window.__sysDark = !!dark;
+    if (readPrefs().theme === 'system') applyPrefs();
+  };
 
   /* ---------- 渲染入口：所有 HTML 都经这里上屏，顺带做繁简转换 ---------- */
   function paint(html) {
@@ -22,11 +31,18 @@
     if (!document.getElementById('paged') && window.ARIO && window.ARIO.setPaged) {
       try { window.ARIO.setPaged(false); } catch (e) { }
     }
+    // 阅读页隐藏状态栏；退出恢复。系统顶部手势仍可临时调出。
+    if (window.ARIO && window.ARIO.setImmersive) {
+      try { window.ARIO.setImmersive(!!document.getElementById('readApp')); } catch (e) { }
+    }
     // 顶栏高度因安全区而异，量出来给吸顶元素用
     var bb = document.querySelector('.bar');
     if (bb) document.documentElement.style.setProperty('--barh', bb.offsetHeight + 'px');
     // 每次换页都归零：不做浏览器那种「回到上次滚动位置」
-    window.scrollTo(0, 0);
+    // 阅读页始终从顶部开始；其它页面从 scrollMemo 恢复（首页↔设置等）
+    var routeKey = location.hash || '#/';
+    var keep = /^#\/k\//.test(routeKey) ? 0 : (scrollMemo[routeKey] || 0);
+    window.scrollTo(0, keep);
   }
 
   function esc(s) {
@@ -57,6 +73,22 @@
         AR.walk(g[i].c[j], [], series, []).forEach(function (lf) { out.push(lf.k); });
       }
     }
+    // 阅读页的上一经/下一经按经号数字自然顺序，不跟目录的「相应/品」分组顺序走。
+    function seq(k) {
+      var m = /(\d+(?:\.\d+)*)$/.exec(String(k || ''));
+      if (!m) return [Number.MAX_SAFE_INTEGER];
+      return m[1].split('.').map(function (x) { return +x; });
+    }
+    function cmp(a, b) {
+      var aa = seq(a), bb = seq(b);
+      for (var n = 0; n < Math.max(aa.length, bb.length); n++) {
+        var d = (aa[n] == null ? -1 : aa[n]) - (bb[n] == null ? -1 : bb[n]);
+        if (d) return d;
+      }
+      return String(a).localeCompare(String(b));
+    }
+    out = out.filter(function (k, i, a) { return k && a.indexOf(k) === i; });
+    out.sort(cmp);
     ORDER[series] = out;
     return out;
   }
@@ -1089,7 +1121,6 @@
       }
       syncPickerFromScroll();
     }, 80);
-    setTimeout(function () { el.classList.remove('at'); }, 2400);
   }
 
   /* 相應选择器：50 个相應塞进一排芯片会乏力，改成一次弹出的列表 */
@@ -1408,6 +1439,7 @@
 
     var body = '';
     notes.blocks.forEach(function (b) {
+      if (b.g === 'skip') return;
       if (b.g === 'num') { body += '<p class="num">' + esc(b.t) + '</p>'; return; }
       var cls = [];
       if (b.g === 'v') cls.push('v');
@@ -1481,7 +1513,7 @@
           return paliLineHTML(t, pzh[AR.normPali(t)]);
         }).join('');
       }
-      paliSec = '<details class="sec fold" data-fold="pali"><summary><span class="dot"></span>巴利語</summary>' + decl + pnote +
+      paliSec = '<details class="sec fold" data-fold="pali"><summary><span class="dot"></span>巴利語</summary>' + pnote + decl +
         '<div class="sec-b"><div class="pali">' + paliBody + '</div></div></details>';
     }
 
@@ -1544,8 +1576,10 @@
       '<h1>' + esc(dispTitle) + '</h1>' + alt + xrRef + path +
       '</div>' +
       (paliMode ? paliSec : '') +
-      (paliMode ? '<div class="xr-label">莊春江譯文</div>' : '') +
-      '<div class="read-body">' + body + '</div>' +
+      (paliMode
+        ? '<details class="sec fold" data-fold="xr" open><summary><span class="dot"></span>莊春江譯文</summary>' +
+          '<div class="sec-b"><div class="read-body">' + body + '</div></div></details>'
+        : '<div class="read-body">' + body + '</div>') +
       '<div class="actbar" id="actbar">' +
       '<span class="ab" id="abAnno">註釋</span>' +
       '<span class="ab" id="abHl">高亮</span>' +
@@ -1809,7 +1843,9 @@
     document.documentElement.style.setProperty('--read-lh', p.lh);
     var sysDark = false;
     try {
-      sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      // 原生上报优先；部分 ROM 的 WebView matchMedia 不跟系统深色
+      if (typeof window.__sysDark === 'boolean') sysDark = window.__sysDark;
+      else sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
     } catch (e) { }
     var dark = p.theme === 'dark' || (p.theme === 'system' && sysDark);
     document.documentElement.classList.toggle('dark', dark);
@@ -2531,7 +2567,7 @@
     setTimeout(function () { app.classList.remove(cls); }, 320);
   }
   /* 折叠区状态记忆：对读默认展开，巴利／比对默认收起 */
-  var FOLD_DEFAULT = { xref: true, pali: false, cmp: false };
+  var FOLD_DEFAULT = { xref: true, pali: false, cmp: false, xr: true };
 
   function bindFolds() {
     Array.prototype.forEach.call(document.querySelectorAll('details[data-fold]'), function (d) {
@@ -2575,7 +2611,7 @@
   function bindSwipeNav(prev, next) {
     window.__suttaNav = function (d) {
       var k = d > 0 ? next : prev;
-      if (!k) { toast(d > 0 ? '已經是最後一經' : '已經是前一經'); return false; }
+      if (!k) { toast(d > 0 ? '已到此經的末尾' : '已經是前一經'); return false; }
       pendingSlide = d > 0 ? 1 : -1;
       // 巴利入口进来时要带着 via=pali，否则下一经会退回汉译版式、返回也回汉译目录
       location.hash = '#/k/' + encodeURIComponent(k) + (paliMode ? '?via=pali' : '');
@@ -3279,9 +3315,6 @@
       '<div class="b"><div class="who">莊春江</div>' + String(m.h).split('\n').map(function (l) {
         return l ? '<p>' + linkifyRefs(esc(l)) + '</p>' : '';
       }).join('') +
-      (/〔|底本作/.test(String(m.h))
-        ? '<div class="legend">〔　〕內為原譯所無、校勘補入的字；「（底本作…）」表示版本異文。</div>'
-        : '') +
       '</div></div>';
     mountSheet(mask);
     var close = function () { mask.remove(); };
@@ -3418,6 +3451,8 @@
     // 小部的具体集（如 Dh）在筛选里统一归到「小部」
     if (scope !== 'all' && groupOfSeries(scope) === 'C') scope = 'C';
     if (!SEARCH_SCOPES.some(function (x) { return x.v === scope; })) scope = 'all';
+    var range = 'all';
+    var limit = 80;
 
     var scopeOpts = SEARCH_SCOPES.map(function (x) {
       return '<button type="button" class="scope-item' +
@@ -3433,7 +3468,8 @@
       '<div class="search-scope"><label>範圍</label>' +
       '<button type="button" class="scope-btn" id="scopeBtn">' +
       '<span id="scopeLabel">' + esc(searchScopeLabel(scope)) + '</span><i>▾</i></button>' +
-      '<div class="scope-menu" id="scopeMenu">' + scopeOpts + '</div></div></div>' +
+      '<div class="scope-menu" id="scopeMenu">' + scopeOpts + '</div></div>' +
+      '<div class="search-range" id="searchRange"></div></div>' +
       '<div id="res"></div></div>'
     );
     var input = document.getElementById('q');
@@ -3455,20 +3491,76 @@
           x.classList.toggle('on', x.getAttribute('data-scope') === scope);
         });
         menu.classList.remove('on');
+        range = 'all';
+        limit = 80;
+        renderRange();
         run(input.value);
       });
     });
 
     input.addEventListener('input', function () {
       clearTimeout(timer);
+      limit = 80;
       timer = setTimeout(function () { run(input.value); }, 260);
     });
     input.addEventListener('focus', function () { menu.classList.remove('on'); });
     input.addEventListener('click', function () { menu.classList.remove('on'); });
     input.focus();
+    renderRange();
     if (q) run(q); else run('');
 
     function scopeIds() { return searchScopeIds(scope); }
+
+    function singleSeries() {
+      return ['SA', 'MA', 'DA', 'AA', 'ZA', 'SN', 'MN', 'DN', 'AN'].indexOf(scope) >= 0;
+    }
+
+    function numOf(k) {
+      var m = /(\d+(?:\.\d+)*)$/.exec(String(k || ''));
+      return m ? parseFloat(m[1].split('.')[0]) : 0;
+    }
+
+    function numRanges() {
+      if (!singleSeries()) return [];
+      var max = 0;
+      Object.keys(AR.S.leaf || {}).forEach(function (k) {
+        if (k.indexOf(scope + '.') !== 0) return;
+        max = Math.max(max, numOf(k));
+      });
+      if (max <= 300) return [];
+      var out = [];
+      for (var a = 1; a <= max; a += 300) out.push(a + '-' + Math.min(max, a + 299));
+      return out;
+    }
+
+    function renderRange() {
+      var box = document.getElementById('searchRange');
+      if (!box) return;
+      var rs = numRanges();
+      box.innerHTML = rs.length
+        ? '<label>經號</label><div class="range-opts">' +
+          '<button type="button" class="range-i' + (range === 'all' ? ' on' : '') + '" data-r="all">全部</button>' +
+          rs.map(function (r) {
+            return '<button type="button" class="range-i' + (range === r ? ' on' : '') +
+              '" data-r="' + r + '">' + r + '</button>';
+          }).join('') + '</div>'
+        : '';
+      Array.prototype.forEach.call(box.querySelectorAll('[data-r]'), function (el) {
+        el.addEventListener('click', function () {
+          range = el.getAttribute('data-r');
+          limit = 80;
+          renderRange();
+          run(input.value);
+        });
+      });
+    }
+
+    function inRange(k) {
+      if (range === 'all') return true;
+      var p = range.split('-');
+      var n = numOf(k);
+      return n >= +p[0] && n <= +p[1];
+    }
 
     function run(v) {
       var res = document.getElementById('res');
@@ -3501,14 +3593,31 @@
         put('<div class="search-tip">在' + esc(searchScopeLabel(scope)) + '中沒有找到「' + esc(v) + '」。</div>');
         return;
       }
-      put('<div class="search-tip">' + esc(searchScopeLabel(scope)) + '　共 ' + hits.length + ' 處' +
-        (hits.length > 80 ? '（顯示前 80 條）' : '') + '</div>' +
-        hits.slice(0, 80).map(function (x) {
+      var filtered = hits.filter(function (x) { return inRange(x.k); });
+      if (!filtered.length) {
+        put('<div class="search-tip">在' + esc(searchScopeLabel(scope)) + '中，这个经号范围没有找到「' + esc(v) + '」。</div>');
+        return;
+      }
+      var shown = filtered.slice(0, limit);
+      put('<div class="search-tip">' + esc(searchScopeLabel(scope)) +
+        (range === 'all' ? '' : '　經號 ' + esc(range)) +
+        '　共 ' + filtered.length + ' 處' +
+        (filtered.length > limit ? '（顯示前 ' + limit + ' 條）' : '') + '</div>' +
+        shown.map(function (x) {
           return '<div class="hit" data-nav="jump" data-href="#/k/' + encodeURIComponent(x.k) + '">' +
             '<div class="n">' + esc(x.n) + '<small>' + esc(x.k) + '</small></div>' +
             '<div class="s">' + hilite(x.snip, x.q || v) + '</div></div>';
-        }).join(''));
+        }).join('') +
+        (filtered.length > limit
+          ? '<div class="search-more"><button type="button" id="moreHits">顯示更多（剩餘 ' +
+            (filtered.length - limit) + ' 條）</button></div>'
+          : ''));
       bindDirRows();
+      var more = document.getElementById('moreHits');
+      if (more) more.addEventListener('click', function () {
+        limit += 80;
+        run(v);
+      });
     }
   }
 
@@ -3555,6 +3664,38 @@
       '</div>';
   }
 
+  /* ---------- 更新日志 ---------- */
+
+  function viewChangelog() {
+    paint(
+      bar('更新日誌', '#/updates') +
+      '<div class="app lic">' +
+      '<h2>更新日誌</h2>' +
+      '<p class="dim">只列用戶可見的變動；安裝包與資源包見「獲取更新及資源包」。</p>' +
+
+      '<h2>1.0.1</h2>' +
+      '<ul>' +
+      '<li>巴利語卡片：修正首行縮進，經號標題移到 AI 直譯說明下方；巴利入口的漢譯卡片可收起。</li>' +
+      '<li>修復「跟隨系統」深色／淺色主題不生效。</li>' +
+      '<li>閱讀頁上一經／下一經改按經號自然順序；到末尾提示「已到此經的末尾」。</li>' +
+      '<li>從閱讀頁回到目錄時，剛才閱讀的經號保持高亮。</li>' +
+      '<li>修正部分段落以「；」「，」等標點開頭的問題。</li>' +
+      '<li>閱讀頁默認隱藏狀態欄，退出恢復；頂部下滑可臨時調出。</li>' +
+      '<li>譯文段落增加右側留白。</li>' +
+      '<li>搜索結果超過 80 條時可「顯示更多」；單部檢索增加經號範圍篩選。</li>' +
+      '<li>註釋／詞釋彈層不再顯示經文校勘說明。</li>' +
+      '<li>從設置返回首頁時保持原滾動位置；閱讀頁仍從頂部開始。</li>' +
+      '</ul>' +
+
+      '<h2>1.0.0</h2>' +
+      '<ul>' +
+      '<li>首個公開源碼版本；相應部巴利逐段直譯、南北傳對讀、筆記/高亮/收藏、離線全文搜索。</li>' +
+      '</ul>' +
+      '</div>'
+    );
+    document.title = AR.conv('更新日誌 · 掌上阿含');
+  }
+
   /* ---------- 获取更新及资源包 ---------- */
 
   function viewUpdates() {
@@ -3585,6 +3726,7 @@
 
       '<p class="dim">本應用離線，不會自動打開這個網址，也不會在背景檢查更新。' +
       '若連結暫時無法打開，表示倉庫尚未公開或網路不可達；可稍後再試。</p>' +
+      '<p><a class="upd-copy" href="#/changelog">查看更新日誌</a></p>' +
       '</div>'
     );
     document.title = AR.conv('獲取更新及資源包 · 掌上阿含');
@@ -4268,6 +4410,12 @@
   /* ---------- 路由 ---------- */
 
   function route() {
+    var hash = location.hash || '#/';
+    // 非阅读页离开时记住滚动位置；阅读页不记，始终回顶部
+    if (lastRoute && lastRoute !== hash && !/^#\/k\//.test(lastRoute)) {
+      scrollMemo[lastRoute] = window.scrollY;
+    }
+    lastRoute = hash;
     // 离开历史页就退出管理态，免得下次回来还带着旧选择
     if ((location.hash || '#/').indexOf('#/history') !== 0) {
       historyManage = false;
@@ -4287,19 +4435,16 @@
     }
     // 巴利优先的版式只在巴利阅读页生效
     document.body.classList.remove('pali-first');
-    // 先归零再渲染：否则从滚动过的页面跳过来会停在中间
-    // （02 的踩坑清单第 9 条，同一件事）
-    window.scrollTo(0, 0);
-    var hash = location.hash || '#/';
     var m;
     if ((m = hash.match(/^#\/d\/([A-C])/))) return viewGroup(m[1]);
     if ((m = hash.match(/^#\/s\/([A-Za-z]+)/))) return viewSeries(m[1]);
     if ((m = hash.match(/^#\/k\/([^?]+)/))) return viewRead(m[1]);
-    if ((m = hash.match(/^#\/search(?:\?q=(.*))?/))) return viewSearch(m[1] ? decodeURIComponent(m[1]) : '');
+    if ((m = hash.match(/^#\/search(?:\?q=([^&]+))?/))) return viewSearch(m[1] ? decodeURIComponent(m[1]) : '');
     if (hash.indexOf('#/pali') === 0) return viewPali();
     if (hash.indexOf('#/notes') === 0) return viewNotes();
     if (hash.indexOf('#/highlights') === 0) return viewHighlights();
     if (hash.indexOf('#/favorites') === 0) return viewFavorites();
+    if (hash.indexOf('#/changelog') === 0) return viewChangelog();
     if (hash.indexOf('#/updates') === 0) return viewUpdates();
     if (hash.indexOf('#/terms') === 0) return viewTerms();
     if (hash.indexOf('#/license') === 0) return viewLicense();

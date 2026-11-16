@@ -353,8 +353,7 @@ body.dark .read-body { color: #CBC2B4; }
   font-size: 15px; line-height: 1.85; color: var(--ink2); white-space: pre-wrap;
 }
 .sec-b .pali p.pl {
-  margin: 0 0 .85em; text-indent: 0;
-  padding-left: 1.4em; text-indent: -1.4em;   /* 悬挂缩进：句子折行时对齐 */
+  margin: 0 0 .85em; padding-left: 0; text-indent: 0;
   text-align: left; white-space: normal;    /* 拉丁文别两端对齐，否则词间空格被拉大 */
   overflow-wrap: anywhere;                  /* 巴利长复合词别把页面撑宽 */
 }
@@ -381,7 +380,7 @@ body.no-palizh .sec-b .pali p.pz { display: none; }
 /* 长段句级成对：一句巴利紧跟一句中文，整段不再“一坨” */
 .sec-b .pali .plp { margin: 0 0 1.1em; }
 .sec-b .pali .plp p.pl {
-  margin: 0 0 .15em; padding-left: 1.4em; text-indent: -1.4em;
+  margin: 0 0 .15em; padding-left: 0; text-indent: 0;
 }
 .sec-b .pali .plp p.pz {
   margin: 0 0 .9em 1.4em; padding-left: 10px;
@@ -549,6 +548,26 @@ body.pali-first details.sec.fold[data-fold="pali"] .sec-b .pali p.pz {
 .scope-item.sub { padding-left: 28px; font-size: 13px; color: var(--ink3); }
 .scope-item.on { background: var(--ground); color: var(--ochre-d); }
 .scope-item.on::after { content: "✓"; margin-left: auto; font-size: 12px; }
+.search-range {
+  margin-top: 9px; font-size: 12px; color: var(--ink4);
+}
+.search-range > label {
+  display: block; font-size: 11.5px; letter-spacing: .06em;
+  margin: 0 0 5px 2px;
+}
+.range-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.range-i {
+  font-family: inherit; font-size: 12px; color: var(--ink3);
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--paper); cursor: pointer;
+}
+.range-i.on { color: var(--ochre-d); border-color: var(--ochre); background: var(--ground); }
+.search-more { padding: 14px var(--pad) 28px; text-align: center; }
+.search-more button {
+  font-family: inherit; font-size: 13px; color: var(--ochre-d);
+  padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--paper);
+}
 .search-tip { padding: 10px var(--pad) 0; font-size: 12px; color: var(--ink4); line-height: 1.8; }
 .hit {
   padding: 14px var(--pad); border-bottom: 1px solid var(--line); cursor: pointer;
@@ -1145,6 +1164,7 @@ body.sheet-open, html.sheet-open { overflow: hidden; }
   color: var(--ink3);
   margin: -0.55em 0 1.05em 1.2em;
   padding-left: .8em;
+  padding-right: 14px;
   border-left: 2px solid var(--line);
   text-indent: 0;
 }
@@ -1233,6 +1253,10 @@ details.sec.fold > summary::after {
   transform: rotate(90deg); transition: transform .2s;
 }
 details.sec.fold[open] > summary::after { transform: rotate(-90deg); }
+
+/* 巴利入口：漢譯卡片可收起，默认展开 */
+details.sec.fold[data-fold="xr"] > .sec-b { padding: 12px 15px 14px; }
+details.sec.fold[data-fold="xr"] .read-body { margin: 0; padding: 0; }
 
 /* 切经动画（设置里可关） */
 @keyframes slideInLeft {

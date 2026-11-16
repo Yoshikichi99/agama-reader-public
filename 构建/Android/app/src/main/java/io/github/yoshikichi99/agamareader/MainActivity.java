@@ -3,6 +3,7 @@ package io.github.yoshikichi99.agamareader;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
@@ -58,6 +59,25 @@ public class MainActivity extends Activity {
     private volatile boolean paged = false;     // 当前是否左右翻页
     private String pendingName;
     private String pendingContent;
+
+    private boolean isSystemDark() {
+        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return mode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** WebView 的 prefers-color-scheme 在部分 ROM 上不跟系统；由原生把真实值推给前端。 */
+    private void pushSystemDark() {
+        if (web == null) return;
+        final boolean dark = isSystemDark();
+        web.post(() -> web.evaluateJavascript(
+                "window.ARIO_onSystemDark && window.ARIO_onSystemDark(" + dark + ")", null));
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        pushSystemDark();
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -164,6 +184,12 @@ public class MainActivity extends Activity {
     private class LocalClient extends WebViewClient {
 
         @Override
+        public void onPageFinished(WebView view, String url) {
+            super.onPageFinished(view, url);
+            pushSystemDark();
+        }
+
+        @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
             Uri u = req.getUrl();
             if (!HOST.equals(u.getHost())) return null;
@@ -212,6 +238,35 @@ public class MainActivity extends Activity {
                     startActivityForResult(i, REQ_EXPORT);
                 } catch (Exception e) {
                     toastShort("沒有可用的檔案儲存程式");
+                }
+            });
+        }
+
+        /** 阅读页隐藏状态栏；顶部下滑可临时调出，退出阅读页恢复。0 权限。 */
+        @JavascriptInterface
+        public void setImmersive(final boolean on) {
+            runOnUiThread(() -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.view.WindowInsetsController c = getWindow().getInsetsController();
+                    if (c == null) return;
+                    if (on) {
+                        c.setSystemBarsBehavior(
+                                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                        c.hide(WindowInsets.Type.statusBars());
+                    } else {
+                        c.show(WindowInsets.Type.statusBars());
+                    }
+                } else {
+                    android.view.View dv = getWindow().getDecorView();
+                    int f = dv.getSystemUiVisibility();
+                    if (on) {
+                        f |= android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                    } else {
+                        f &= ~(android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+                    }
+                    dv.setSystemUiVisibility(f);
                 }
             });
         }
