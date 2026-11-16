@@ -370,7 +370,7 @@ public class MainActivity extends Activity {
         } else if (req == REQ_FONT) {
             try (InputStream in = getContentResolver().openInputStream(uri)) {
                 if (in == null) throw new IOException("無法讀取");
-                byte[] bytes = readBytes(in, 12 * 1024 * 1024);
+                byte[] bytes = readBytes(in, 32 * 1024 * 1024);
                 String name = "font.ttf";
                 try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
                     if (c != null && c.moveToFirst()) {
@@ -392,7 +392,7 @@ public class MainActivity extends Activity {
         byte[] buf = new byte[8192];
         int n;
         while ((n = in.read(buf)) > 0) {
-            if (bos.size() + n > max) throw new IOException("字體檔案超過 12 MB");
+            if (bos.size() + n > max) throw new IOException("字體檔案超過 32 MB");
             bos.write(buf, 0, n);
         }
         return bos.toByteArray();

@@ -4335,7 +4335,7 @@
           '連同刪除', function () {
             keys.forEach(function (k) { removeItemByKey(type, k); cleanItemFolder(type, k); });
             view(); toast('已刪除文件夾與 ' + keys.length + ' 條');
-          });
+          }, { cancelText: '保留條目', delay: 3000, danger: true });
         // 第二个弹窗关闭/取消时，第一层已经把条目移到未分類
       });
   }
@@ -4705,20 +4705,42 @@
     });
   }
   /* 自绘确认框：WebView 默认不弹 window.confirm，用它会被静默忽略 */
-  function confirmSheet(title, msg, okText, onOk) {
+  function confirmSheet(title, msg, okText, onOk, opts) {
+    opts = opts || {};
     var mask = document.createElement('div');
     mask.className = 'sheet-mask';
     mask.innerHTML = '<div class="sheet"><div class="hd"><span class="t">' + esc(title) + '</span>' +
       '<span class="x" data-close>×</span></div>' +
       '<div class="b"><p>' + esc(msg) + '</p></div>' +
-      '<div class="btns"><span class="btn" id="cfNo">取消</span>' +
-      '<span class="btn pri" id="cfYes">' + esc(okText || '確定') + '</span></div></div>';
+      '<div class="btns"><span class="btn" id="cfNo">' + esc(opts.cancelText || '取消') + '</span>' +
+      '<span class="btn pri' + (opts.danger ? ' danger' : '') + '" id="cfYes">' +
+      esc(okText || '確定') + '</span></div></div>';
     mountSheet(mask);
     mask.addEventListener('click', function (ev) {
       if (ev.target === mask || ev.target.hasAttribute('data-close')) mask.remove();
     });
     mask.querySelector('#cfNo').onclick = function () { mask.remove(); };
-    mask.querySelector('#cfYes').onclick = function () {
+    var yes = mask.querySelector('#cfYes');
+    if (opts.delay) {
+      var left = Math.ceil(opts.delay / 1000);
+      yes.disabled = true;
+      yes.classList.add('wait');
+      yes.textContent = (okText || '確定') + '（' + left + 's）';
+      var tm = setInterval(function () {
+        if (!document.body.contains(yes)) { clearInterval(tm); return; }
+        left--;
+        if (left <= 0) {
+          clearInterval(tm);
+          yes.disabled = false;
+          yes.classList.remove('wait');
+          yes.textContent = okText || '確定';
+        } else {
+          yes.textContent = (okText || '確定') + '（' + left + 's）';
+        }
+      }, 1000);
+    }
+    yes.onclick = function () {
+      if (yes.disabled) return;
       mask.remove();
       if (onOk) onOk();
     };
@@ -4760,6 +4782,7 @@
       '<div class="set-row link" id="fontPick"><span class="k">導入字體文件' +
       '<span class="sub2">' + (customFontLoaded ? esc(customFontName) : '未導入') + '</span></span>' +
       '<span class="v">' + (customFontLoaded ? '更換 ›' : '›') + '</span></div>' +
+      '<div class="set-note">單個字體檔案上限 32 MB；字體只存在本機，不隨資料備份。</div>' +
       (customFontLoaded ? '<div class="set-row link" id="fontClear"><span class="k">移除自訂字體</span><span class="v">›</span></div>' : '') +
 
       '<div class="set-h">閱讀</div>' +

@@ -483,6 +483,8 @@ body.pali-first details.sec.fold[data-fold="pali"] .sec-b .pali p.pz {
   border: 1px solid var(--line); background: var(--paper); color: var(--ink2);
 }
 .btn.pri { background: var(--ochre); border-color: var(--ochre); color: #FBF3E5; }
+.btn.pri.danger { background: #8C2F2F; border-color: #8C2F2F; }
+.btn.wait { opacity: .55; cursor: default; }
 .btn.ghost { border: none; color: var(--ink3); }
 
 /* 页脚与翻页 */
