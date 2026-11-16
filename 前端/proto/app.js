@@ -10,6 +10,8 @@
   var LANG_KEY = 'ar.lang';
   var scrollMemo = {};      // 非阅读页的滚动位置：首页→设置→返回时恢复
   var lastRoute = '';
+  var searchBack = null;    // 从搜索结果进入阅读时，返回原搜索页
+  var searchRestoreScroll = null;
   var customFontName = '';
   var customFontLoaded = false;
 
@@ -1466,6 +1468,22 @@
     if ((m = hash.match(/^#\/k\/([^?]+)(?:\?|$)/))) {
       var back = hash.match(/[?&]back=([a-z]+)/);
       if (back && back[1] === 'dir') return parentOfKey(decodeURIComponent(m[1]));
+      // 从搜索结果点进来的：返回原搜索页，保留关键词、范围与经号范围
+      if (back && back[1] === 'search') {
+        var qm = hash.match(/[?&]q=([^&]*)/);
+        var sm = hash.match(/[?&]series=([^&]*)/);
+        var rm = hash.match(/[?&]range=([^&]*)/);
+        var lm = hash.match(/[?&]lim=([^&]*)/);
+        var q = qm ? decodeURIComponent(qm[1]) : (searchBack ? searchBack.q : '');
+        var s = sm ? decodeURIComponent(sm[1]) : (searchBack ? searchBack.series : 'all');
+        var r = rm ? decodeURIComponent(rm[1]) : (searchBack ? searchBack.range : 'all');
+        var l = lm ? +lm[1] : (searchBack ? searchBack.limit : 80);
+        if (searchBack) searchRestoreScroll = searchBack.scroll;
+        return '#/search?q=' + encodeURIComponent(q || '') +
+          '&series=' + encodeURIComponent(s || 'all') +
+          '&range=' + encodeURIComponent(r || 'all') +
+          '&lim=' + (l || 80);
+      }
       // 从收藏/笔记/划线列表点进来的，返回时回原列表
       if (back && /^(favorites|notes|highlights)$/.test(back[1])) return '#/' + back[1];
       var from = hash.match(/[?&]from=([^&]+)/);
@@ -1494,6 +1512,23 @@
     location.hash = up;
     return up;
   };
+
+  // 从搜索结果进入阅读后，只要翻页（含同经内翻屏），返回就应该回目录，
+  // 而不是再回搜索页。这里只改当前地址，不触发重新渲染。
+  function dropSearchBack() {
+    var h = location.hash || '';
+    if (!/[?&]back=search(?:&|$)/.test(h)) return;
+    var m = h.match(/^#\/k\/([^?]+)(?:\?(.*))?$/);
+    if (!m) return;
+    var keep = [];
+    (m[2] || '').split('&').forEach(function (p) {
+      if (!p || /^back=/.test(p) || /^q=/.test(p) || /^series=/.test(p) ||
+          /^range=/.test(p) || /^lim=/.test(p)) return;
+      keep.push(p);
+    });
+    var nh = '#/k/' + m[1] + (keep.length ? '?' + keep.join('&') : '');
+    try { history.replaceState(null, '', nh); } catch (e) { }
+  }
 
   function bindDirRows() {
     Array.prototype.forEach.call(document.querySelectorAll('[data-href]'), function (el) {
@@ -2039,6 +2074,7 @@
     }
 
     window.__pageTurn = function (d) {
+      dropSearchBack();
       var want = idx + d;
       // 翻到本经最后一页/第一页之外：交给切经，别把用户卡住
       if (want < 0 || want >= total) {
@@ -2066,6 +2102,7 @@
         if (want < 0 || want >= total) {
           if (window.__suttaNav) window.__suttaNav(want < 0 ? -1 : 1);
         } else {
+          dropSearchBack();
           goto(want);
         }
       }
@@ -3703,8 +3740,11 @@
     // 小部的具体集（如 Dh）在筛选里统一归到「小部」
     if (scope !== 'all' && groupOfSeries(scope) === 'C') scope = 'C';
     if (!SEARCH_SCOPES.some(function (x) { return x.v === scope; })) scope = 'all';
-    var range = 'all';
-    var limit = 80;
+    var rngm = location.hash.match(/[?&]range=([^&]+)/);
+    var range = rngm ? decodeURIComponent(rngm[1]) : 'all';
+    if (range !== 'all' && !/^\d+-\d+$/.test(range)) range = 'all';
+    var limm = location.hash.match(/[?&]lim=([^&]+)/);
+    var limit = limm ? Math.max(80, +limm[1] || 80) : 80;
 
     var scopeOpts = SEARCH_SCOPES.map(function (x) {
       return '<button type="button" class="scope-item' +
@@ -3856,7 +3896,11 @@
         '　共 ' + filtered.length + ' 處' +
         (filtered.length > limit ? '（顯示前 ' + limit + ' 條）' : '') + '</div>' +
         shown.map(function (x) {
-          return '<div class="hit" data-nav="jump" data-href="#/k/' + encodeURIComponent(x.k) + '">' +
+          var backQ = '?back=search&q=' + encodeURIComponent(v) +
+            '&series=' + encodeURIComponent(scope) +
+            '&range=' + encodeURIComponent(range) +
+            '&lim=' + limit;
+          return '<div class="hit" data-nav="jump" data-href="#/k/' + encodeURIComponent(x.k) + backQ + '">' +
             '<div class="n">' + esc(x.n) + '<small>' + esc(x.k) + '</small></div>' +
             '<div class="s">' + hilite(x.snip, x.q || v) + '</div></div>';
         }).join('') +
@@ -3865,6 +3909,15 @@
             (filtered.length - limit) + ' 條）</button></div>'
           : ''));
       bindDirRows();
+      searchBack = { q: v, series: scope, range: range, limit: limit, scroll: window.scrollY };
+      Array.prototype.forEach.call(document.querySelectorAll('.hit[data-href]'), function (el) {
+        el.addEventListener('click', function () { searchBack.scroll = window.scrollY; });
+      });
+      if (searchRestoreScroll != null) {
+        var sy = searchRestoreScroll;
+        searchRestoreScroll = null;
+        setTimeout(function () { window.scrollTo(0, sy); }, 40);
+      }
       var more = document.getElementById('moreHits');
       if (more) more.addEventListener('click', function () {
         limit += 80;
