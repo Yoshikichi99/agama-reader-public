@@ -27,8 +27,8 @@ android {
         applicationId "io.github.yoshikichi99.agamareader"
         minSdk 24
         targetSdk 35
-        versionCode 3
-        versionName "1.0.1"
+        versionCode 4
+        versionName "1.0.2"
     }
 
     // 03 自己的 release 钥匙（与 02 的 zcj-release.jks 分开）。
@@ -100,3 +100,4 @@ tasks.register("syncAssets", Sync) {
 
 android.sourceSets.main.assets.srcDirs += genAssets.get().asFile
 tasks.named("preBuild").configure { dependsOn "syncAssets" }
+
