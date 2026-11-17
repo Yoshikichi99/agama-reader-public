@@ -404,12 +404,13 @@ var AR = (function () {
     if (Array.isArray(raw)) {
       raw.forEach(function (pair) {
         var line = normPali(pair.p);
-        out.push({ p: pair.p, z: (over[line] != null) ? over[line] : (pair.z || '') });
+        out.push({ p: pair.p, z: (over[line] != null) ? over[line] : (pair.z || ''),
+                   pey: pair.pey ? 1 : 0 });
       });
     } else {
       // 旧格式兼容：规范行 -> 中文
       Object.keys(raw).forEach(function (line) {
-        out.push({ p: line, z: (over[line] != null) ? over[line] : raw[line] });
+        out.push({ p: line, z: (over[line] != null) ? over[line] : raw[line], pey: 0 });
       });
     }
     return out;
@@ -442,7 +443,7 @@ var AR = (function () {
       if (!ps) return;
       ps.forEach(function (x) {
         var n = normPali(x.p);
-        if (overEntry[n] != null) x = { p: x.p, z: overEntry[n] };
+        if (overEntry[n] != null) x = { p: x.p, z: overEntry[n], pey: x.pey };
         pairs.push(x);
       });
     });

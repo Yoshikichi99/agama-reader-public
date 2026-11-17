@@ -1341,37 +1341,66 @@
     }
     return '<a class="scell" data-key="' + esc(it.k) + '" href="' + href + '"><b>' + esc(num) + '</b></a>';
   }
-  /* 从经文返回：滚到目标格所在分区的**顶部**，并标出那一格 */
+  /* 从经文返回：把「刚才读的那一格」滚进屏幕，并标出来。
+   * 以前相应视图是滚到分区顶部就算完——相应长的（诸天相应 100 多经）会把目标格
+   * 甩到屏幕外，只看见一个高亮分区看不出在哪；分区标题本来就吸顶，直接盯住格子更准。
+   * 目录页一千多个格子，WebView 里字体是 swap 加载、栅格行高常比首帧晚一两拍才定，
+   * 只滚一次会「差一点点」，所以滚完回头看一眼，没停对就按新位置补滚。 */
   function locateCell(key, mode) {
     var el = document.querySelector('.scell[data-key="' + key + '"]');
     if (!el) return;
     el.classList.add('at');
+    function placeOnce() {
+      // 56 = 让出吸顶分区标题的高度，格子别藏到标题底下
+      window.scrollTo(0, Math.max(0,
+        el.getBoundingClientRect().top + window.scrollY - stickyOffset() - 56));
+    }
+    function landed() {
+      var t = stickyOffset(), r = el.getBoundingClientRect();
+      return r.top >= t + 40 && r.bottom <= window.innerHeight + 2;
+    }
+    // 只滚一次会踩到「布局还没长开」的那一拍：第一次滚的时候上面几段还没排完，
+    // 算出来的位置是对的，等内容撑开格子就又被推下去了。隔几拍各补一次，代价只是几次 scrollTo。
+    placeOnce();
+    setTimeout(placeOnce, 120);
+    setTimeout(placeOnce, 360);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () { setTimeout(placeOnce, 40); });
+    }
     setTimeout(function () {
-      if (mode === 'shen') {
-        var sec = el.closest('.sgroup');
-        var top = sec ? sec.getBoundingClientRect().top + window.scrollY - stickyOffset() - 2 : 0;
-        window.scrollTo(0, Math.max(0, top));
-        var chips = document.querySelectorAll('[data-g]');
-      } else {
-        window.scrollTo(0, Math.max(0, el.getBoundingClientRect().top + window.scrollY - stickyOffset() - 40));
+      if (!landed()) {
+        // 还是没停对（例如目标就在文档最末，滚不过去）：兜底把这一格放到屏幕中间
+        var r = el.getBoundingClientRect();
+        window.scrollTo(0, Math.max(0, r.top + window.scrollY - window.innerHeight / 2));
       }
       syncPickerFromScroll();
-    }, 80);
+    }, 800);
   }
 
-  /* 相應选择器：50 个相應塞进一排芯片会乏力，改成一次弹出的列表 */
+  /* 当前滚到哪一段相应：取「已经顶到吸顶线下方的最后一个分区」 */
+  function currentGroupIndex() {
+    var th = stickyOffset() + 6, secs = document.querySelectorAll('.sgroup'), best = 0;
+    for (var i = 0; i < secs.length; i++) {
+      if (secs[i].getBoundingClientRect().top - th <= 0) best = i;
+    }
+    return best;
+  }
+
+  /* 相應选择器：50 个相應塞进一排芯片会乏力，改成一次弹出的列表。
+   * 列表默认停在「你现在所在的那一段」，并把它标出来——30 个相应从头翻太费劲。 */
   function bindPicker(groups, fallbackName) {
     var btn = document.getElementById('pickBtn');
     if (!btn) return;
     window.__pickedGroups = groups;
     btn.addEventListener('click', function () {
+      var curIdx = currentGroupIndex();
       var mask = document.createElement('div');
       mask.className = 'sheet-mask';
       var rows = groups.map(function (g, i) {
         var nums = g.items.map(itemNum).filter(Boolean);
         var lo = nums.length ? Math.min.apply(null, nums) : 0;
         var hi = nums.length ? Math.max.apply(null, nums) : 0;
-        return '<div class="pickrow-i" data-i="' + i + '">' +
+        return '<div class="pickrow-i' + (i === curIdx ? ' cur' : '') + '" data-i="' + i + '">' +
           '<span class="pn">' + esc(g.name || fallbackName) + '</span>' +
           '<span class="pc">' + (lo && hi ? (lo === hi ? lo : lo + '–' + hi) + '　' : '') +
           sumCount(g.items) + ' 經</span></div>';
@@ -1380,6 +1409,13 @@
         '<span class="x" data-close>×</span></div>' +
         '<div class="picklist">' + rows + '</div></div>';
       mountSheet(mask);
+      // 直接把列表滚到当前相应（居中），省掉从头翻
+      var curEl = mask.querySelector('.pickrow-i.cur');
+      var list = mask.querySelector('.picklist');
+      if (curEl && list) {
+        var d = curEl.getBoundingClientRect().top - list.getBoundingClientRect().top;
+        list.scrollTop = Math.max(0, list.scrollTop + d - (list.clientHeight - curEl.offsetHeight) / 2);
+      }
       mask.addEventListener('click', function (ev) {
         if (ev.target === mask || ev.target.hasAttribute('data-close')) mask.remove();
       });
@@ -1400,13 +1436,9 @@
   function syncPickerFromScroll() {
     var btn = document.getElementById('pickBtn');
     if (!btn || !window.__pickedGroups) return;
-    var th = stickyOffset() + 6;
     var secs = document.querySelectorAll('.sgroup');
-    var best = null;
-    for (var i = 0; i < secs.length; i++) {
-      if (secs[i].getBoundingClientRect().top - th <= 0) best = secs[i];
-    }
-    if (!best) best = secs[0];
+    if (!secs.length) return;
+    var best = secs[currentGroupIndex()];
     if (best) {
       var nm = best.querySelector('.sg-h .sn');
       if (nm) btn.firstChild.textContent = nm.textContent.replace(/\s+/g, '');
@@ -1648,15 +1680,38 @@
     return null;
   }
 
+  /* 整段巴利只是一个「标记」吗？（peyyāla 缩略语、经名、品名这类）
+   * 要把段号、括号、结尾句点剥掉再看，剩下的词本身才是有没有意义的依据。 */
+  function paliMarkerText(t) {
+    var s = String(t || '').trim();
+    s = s.replace(/^[（(\[]\s*/, '').replace(/\s*[）)\]]\s*\.?$/, '').trim();
+    s = s.replace(/^\(\d+\)\s*/, '').replace(/[.…·]+\s*$/, '').trim();
+    return s;
+  }
+
+  function isPaliMarker(t) {
+    var s = paliMarkerText(t);
+    if (!s || s.length > 45 || s.split(/\s+/).length > 6) return false;
+    return /peyyāl|suttaṃ|vaggo|nipāto|paṇṇāsaka|saṃyuttaṃ|kathā/i.test(s);
+  }
+
   function paliPairMismatch(p, z) {
     var a = String(p || '').trim(), b = String(z || '').trim();
     if (!a || !b) return false;
-    // 源包里有些 peyyāla/缩写标记被整段汉译顶替；不把这种硬配展示成“逐句直译”
-    if (/peyyāl|suttaṃ|vaggo|nipāto|paṇṇāsaka|saṃyuttaṃ|kathā/i.test(a) && b.length > 80) return true;
-    return a.length < 30 && b.length > a.length * 4;
+    /* 旧的判据是「含 suttaṃ 等词 + 汉译 >80 字」和「巴利 <30 字而汉译 >4 倍」，
+     * 结果把 Evaṃ me sutaṃ…（如是我闻）、Navamaṃ.（第九）这类正常段落也判成缩略语，
+     * 汉译整段被换成提示——2026-11-17 实测会误伤 100 多段。
+     * 现在只认「整段就是一个标记词」，其余一律照常显示汉译。 */
+    return isPaliMarker(a) && b.length > 60;
   }
 
-  function paliLineHTML(t, z) {
+  function paliLineHTML(t, z, pey) {
+    // 源包承认这一段巴利是缩略语、汉译是展开内容：汉译照给，底下补一句说明
+    if (pey && z) {
+      return '<div class="plp"><p class="pl">' + esc(t) + '</p>' +
+        '<p class="pz">' + esc(z) +
+        '<span class="pey">（原文此處為縮略語，漢譯依前文展開）</span></p></div>';
+    }
     if (t.length >= 160) {
       var ps = paliSentences(t);
       if (!z) {
@@ -1780,7 +1835,7 @@
       var paliBody = '';
       if (pali.pairs && pali.pairs.length) {
         paliBody = pali.pairs.map(function (pair) {
-          return paliLineHTML(pair.p, pair.z || '');
+          return paliLineHTML(pair.p, pair.z || '', pair.pey);
         }).join('');
       } else {
         // 源站巴利块前面挂着「Namo tassa / 部名 / 相应 / 品 / 经号标题」这些书目行，
@@ -2173,10 +2228,12 @@
                   folders: 'ar.folders', itemfolders: 'ar.itemfolder' };
 
   function collectUserData() {
-    var out = { notes: {}, favorites: {}, highlights: {}, translations: {}, palizh: {}, history: {} };
+    var out = { notes: {}, favorites: {}, highlights: {}, translations: {}, palizh: {}, history: [] };
     Object.keys(UD_MAPS).forEach(function (k) {
       try { out[k] = JSON.parse(localStorage.getItem(UD_MAPS[k]) || '{}'); } catch (e) { out[k] = {}; }
     });
+    // 历史是数组：空表也导成 []，不然导回来会变成 {} 把阅读页弄坏
+    if (!Array.isArray(out.history)) out.history = [];
     try { out.annotations = JSON.parse(localStorage.getItem('ar.ua') || '{}'); } catch (e) { out.annotations = {}; }
     // 别人给的笔记包（註釋來源）也一起备份
     try { out.noteSets = JSON.parse(localStorage.getItem('ar.sets') || 'null') || allSets(); }
@@ -2220,6 +2277,24 @@
       var n = 0;
       Object.keys(UD_MAPS).forEach(function (k) {
         if (!d[k] || typeof d[k] !== 'object') return;
+        // 历史是数组，不能按 id 合并：写进对象会让阅读页 pushHist() 直接抛
+        // “a.unshift is not a function”，所有经文都打不开（2026-11-17 真机踩到过）。
+        if (k === 'history') {
+          if (!Array.isArray(d[k])) return;
+          var curH = histAll().slice();
+          var seenH = {};
+          curH.forEach(function (x) { if (x) seenH[x.k + '\u0001' + x.kind + '\u0001' + x.t] = 1; });
+          d[k].forEach(function (x) {
+            if (!x || !x.k) return;
+            var sig = x.k + '\u0001' + x.kind + '\u0001' + x.t;
+            if (seenH[sig]) return;
+            seenH[sig] = 1;
+            curH.push(x); n++;
+          });
+          curH.sort(function (a, b) { return a.t < b.t ? 1 : -1; });
+          localStorage.setItem('ar.hist', JSON.stringify(curH.slice(0, 400)));
+          return;
+        }
         var cur = {};
         try { cur = JSON.parse(localStorage.getItem(UD_MAPS[k]) || '{}'); } catch (e) { }
         Object.keys(d[k]).forEach(function (id) { cur[id] = d[k][id]; n++; });
@@ -2246,6 +2321,17 @@
             localStorage.setItem('ar.post.' + k, d.posts[k]); n++;
           }
         });
+      }
+      /* 别人给的註釋套（「作為新的一套」导入的）也在备份里。
+       * 2026-11-17 之前只导出、不写回，换机后这些套会静默消失；这里按 id 補回去，
+       * 本机已有的同名 id 保留本机那份，不覆盖正在用的。 */
+      if (d.noteSets && typeof d.noteSets === 'object') {
+        var sets = {};
+        try { sets = JSON.parse(localStorage.getItem('ar.sets') || '{}') || {}; } catch (e) { sets = {}; }
+        Object.keys(d.noteSets).forEach(function (sid) {
+          if (!sets[sid] && d.noteSets[sid]) { sets[sid] = d.noteSets[sid]; n++; }
+        });
+        try { localStorage.setItem('ar.sets', JSON.stringify(sets)); } catch (e) { }
       }
       if (window.AR && AR.setPaliOverrides) {
         try { AR.setPaliOverrides(JSON.parse(localStorage.getItem('ar.palizh') || '{}')); } catch (e) { }
@@ -2671,7 +2757,12 @@
   var K_HIST = 'ar.hist';
   var WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
-  function histAll() { return readStore(K_HIST, []); }
+  function histAll() {
+    var a = readStore(K_HIST, []);
+    // 备份导入可能把 history 写成对象（旧版 collectUserData 空表就是 {}），
+    // 那之后 pushHist() 的 a.unshift 会炸掉整个阅读页——这里兜住，只认数组。
+    return Array.isArray(a) ? a : [];
+  }
 
   function pushHist(k, kind) {
     if (!k) return;
