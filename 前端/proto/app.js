@@ -184,15 +184,50 @@
     } catch (e) { return null; }
   }
 
+  function segNoteHTML(b, nz) {
+    if (!nz || !nz.h) return '';
+    return '<div class="nz" data-nb="' + b + '">' +
+      '<span class="nz-t">筆記</span>' +
+      esc(nz.h).replace(/\n/g, '<br>') + '</div>';
+  }
+
+  /* 段笔记保存/删除后立刻更新当前页，不用重开经文。
+   * 有译文时笔记在 .tr 之后，没有就在段落之后。 */
+  function refreshSegNote(k, b, saved) {
+    var p = document.querySelector('.read-body p[data-b="' + b + '"]');
+    if (!p) return;
+    var old = document.querySelector('.read-body .nz[data-nb="' + b + '"]');
+    if (!saved) {
+      if (old) old.remove();
+      p.classList.remove('hasn');
+    } else {
+      p.classList.add('hasn');
+      var html = AR.conv(segNoteHTML(b, segNotes(k)[b]));
+      if (old) {
+        old.outerHTML = html;
+      } else {
+        var after = p, next = p.nextElementSibling;
+        if (next && next.classList && next.classList.contains('tr')) after = next;
+        after.insertAdjacentHTML('afterend', html);
+      }
+    }
+    // 笔记增减会改变正文高度，翻页模式要重算页数
+    if (readPrefs().paging === 'page' && window.__pageRecalc) window.__pageRecalc(true);
+  }
+
   function savePost(k, txt) {
     var old = getPost(k) || {};
     var now = new Date().toISOString();
     var rec = { k: k, h: txt, created: old.created || now, updated: now };
     localStorage.setItem('ar.post.' + k, JSON.stringify(rec));
+    clearDraft('post', k);
     return rec;
   }
 
-  function delPost(k) { localStorage.removeItem('ar.post.' + k); }
+  function delPost(k) {
+    localStorage.removeItem('ar.post.' + k);
+    clearDraft('post', k);
+  }
 
   function fmtTs(iso) {
     if (!iso) return '';
@@ -291,6 +326,58 @@
     }
     if (!Object.keys(m).length) delete all[k];
     writeStore(K_SN, all);
+    clearDraft('seg', k, b);
+  }
+
+  /* ---------- 未保存的笔记草稿 ----------
+   * 每敲一个字就写 localStorage：切页、按返回、锁屏、被杀进程都不丢。
+   * 草稿不进入「我的资料」备份，也不参与同步；存满 30 天自动清。
+   */
+  var K_DRAFTS = 'ar.drafts';
+
+  function draftMap() {
+    var m = readStore(K_DRAFTS, {});
+    return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
+  }
+  function draftKey(kind, k, b) { return kind + '|' + k + '|' + (b == null ? '' : b); }
+  function getDraft(kind, k, b) {
+    var d = draftMap()[draftKey(kind, k, b)];
+    return (d && typeof d === 'object') ? d : null;
+  }
+  function putDraft(kind, k, b, obj) {
+    var m = draftMap();
+    m[draftKey(kind, k, b)] = obj;
+    writeStore(K_DRAFTS, m);
+  }
+  function clearDraft(kind, k, b) {
+    var m = draftMap(), key = draftKey(kind, k, b);
+    if (m[key]) { delete m[key]; writeStore(K_DRAFTS, m); }
+  }
+  /* 草稿比已保存的笔记还旧 → 丢弃；与已保存内容一致 → 清掉 */
+  function draftFor(kind, k, b, savedText, savedUpdated) {
+    var d = getDraft(kind, k, b);
+    if (!d || typeof d.h !== 'string' || d.h === savedText) {
+      if (d) clearDraft(kind, k, b);
+      return { text: savedText, restored: false };
+    }
+    var upd = Date.parse(savedUpdated || '');
+    if (!isNaN(upd) && d.ts && d.ts < upd) {
+      clearDraft(kind, k, b);
+      return { text: savedText, restored: false };
+    }
+    return { text: d.h, restored: true };
+  }
+  function draftHintHTML(id) {
+    return '<div class="draft-hint" id="' + id + 'Hint">已恢復上次未儲存的草稿' +
+      '<span id="' + id + 'Discard">捨棄</span></div>';
+  }
+  function purgeDrafts() {
+    var m = draftMap(), cut = Date.now() - 30 * 86400000, dirty = false;
+    Object.keys(m).forEach(function (key) {
+      var d = m[key];
+      if (!d || !d.ts || d.ts < cut) { delete m[key]; dirty = true; }
+    });
+    if (dirty) writeStore(K_DRAFTS, m);
   }
 
   function allFavs() {
@@ -808,7 +895,42 @@
       '</div>'
     );
     bindHomeRows();
+    fitDailyVerse();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitDailyVerse);
   }
+
+  /* 今日一句：最多占「原来三行」的高度（19.5px × 1.95 × 3 ≈ 114px）。
+   * 先降字号，最低 15px；还超就压缩行距，最低 1.6；都到底才硬裁。 */
+  function fitDailyVerse() {
+    var p = document.querySelector('.verse-q');
+    if (!p) return;
+    var base = 19.5, minFs = 15, baseLh = 1.95, minLh = 1.6;
+    var maxH = base * baseLh * 3;
+    var fs = base, lh = baseLh;
+    p.style.fontSize = fs + 'px';
+    p.style.lineHeight = lh;
+    p.style.maxHeight = '';
+    p.style.overflow = '';
+
+    function tooTall() { return p.scrollHeight > maxH + 1; }
+
+    while (fs > minFs && tooTall()) {
+      fs = Math.max(minFs, fs - 0.5);
+      p.style.fontSize = fs + 'px';
+    }
+    while (lh > minLh && tooTall()) {
+      lh = Math.max(minLh, Math.round((lh - 0.05) * 100) / 100);
+      p.style.lineHeight = lh;
+    }
+    if (tooTall()) {
+      p.style.maxHeight = maxH + 'px';
+      p.style.overflow = 'hidden';
+    }
+  }
+
+  window.addEventListener('resize', function () {
+    if (document.querySelector('.verse-q')) fitDailyVerse();
+  });
 
   /* 首页行是普通 <a>，正常情况下单击就会走 hash。
    * 旧 WebView 的 300ms 双击缩放、或上一页残留的触摸监听，偶尔会把第一次点击吃掉；
@@ -1792,11 +1914,7 @@
       }
       // 本段笔记也附在段后，和译文同一个位置逻辑
       var nz = sn[b.i];
-      if (nz && nz.h) {
-        body += '<div class="nz" data-nb="' + b.i + '">' +
-          '<span class="nz-t">筆記</span>' +
-          esc(nz.h).replace(/\n/g, '<br>') + '</div>';
-      }
+      body += segNoteHTML(b.i, nz);
     });
 
     // 对读：直接在本页展开对应经的正文（不跳走），另留一个小「跳转」
@@ -1907,9 +2025,9 @@
 
     paint(
       '<div class="app read" id="readApp">' +
+      '<div class="runhead"><span class="no">' + noLine + '</span></div>' +
       '<div class="pageview"><div class="paged" id="paged">' +
       '<div class="read-head">' +
-      '<div class="no">' + noLine + '</div>' +
       '<h1>' + esc(dispTitle) + '</h1>' + alt + xrRef + path +
       '</div>' +
       (paliMode ? paliSec : '') +
@@ -2045,7 +2163,7 @@
       var next = avail[(i + 1) % avail.length];
       setEdition(next);
       mEd.textContent = EDITION_NAME[next];
-      var no = document.querySelector('.read-head .no');
+      var no = document.querySelector('.runhead .no');
       if (no) {
         var v = next === 'tw' ? null : r[next];
         no.innerHTML = AR.conv(next !== 'tw' && v
@@ -2100,22 +2218,41 @@
     }
     var pg = document.getElementById('paged');
     if (!pg) return;
-    if (on) setupPaging();
-    else pg.style.transform = '';
+    if (on) {
+      // 若切进来时切经动画还没结束，#readApp 上残留的 transform 会让
+      // .pageview 的 fixed 定位改以 #readApp 为包含块，页数会算错，先摘掉。
+      var ra = document.getElementById('readApp');
+      if (ra) ra.classList.remove('in-left', 'in-right');
+      setupPaging();
+    } else {
+      pg.style.transform = '';
+      window.__pageRecalc = null;
+    }
   }
+
+  /* 页数 = 列数。scrollWidth 可能已含末尾的 column-gap，用 round 比 ceil 稳：
+   * N 列时 scrollWidth = N*step - gap（含末尾 gap 时 = N*step），
+   * 两种都应收敛到 N，而不是 N+1。 */
+  function pageTotal(pg, gap, step) {
+    return Math.max(1, Math.round((pg.scrollWidth + gap) / step));
+  }
+
   function setupPaging() {
     var pg = document.getElementById('paged');
     var pv = document.querySelector('.pageview');
     if (!pg || !pv) return;
 
-    var cs = getComputedStyle(pg);
-    var padL = parseFloat(cs.paddingLeft) || 0;
-    var gap = parseFloat(cs.columnGap) || 0;
-    var cw = parseFloat(cs.width) - padL * 2;
-    var step = cw + gap;
-    if (!(step > 0)) return;
+    var gap = 0, step = 0;
+    function metrics() {
+      var cs = getComputedStyle(pg);
+      var padL = parseFloat(cs.paddingLeft) || 0;
+      gap = parseFloat(cs.columnGap) || 0;
+      step = parseFloat(cs.width) - padL * 2 + gap;
+      return step > 0;
+    }
+    if (!metrics()) return;
 
-    var total = Math.max(1, Math.ceil((pg.scrollWidth + gap) / step));
+    var total = pageTotal(pg, gap, step);
     var idx = 0;
 
     function paintInd() {
@@ -2128,6 +2265,17 @@
       paintInd();
     }
 
+    /* 字体就绪、旋转、改字号行距、展开/收起折叠区之后重算页数；
+     * keep=true 时尽量停在原来那一页，不要把人弹回第一页。 */
+    function recalc(keep) {
+      if (!document.body.classList.contains('paged-mode')) return;  // 已切回滚动模式
+      if (document.getElementById('paged') !== pg) return;   // 旧页面，已换 DOM
+      if (!metrics()) return;
+      total = pageTotal(pg, gap, step);
+      idx = keep ? Math.max(0, Math.min(total - 1, idx)) : 0;
+      goto(idx);
+    }
+
     window.__pageTurn = function (d) {
       dropSearchBack();
       var want = idx + d;
@@ -2138,15 +2286,21 @@
       }
       goto(want);
     };
-    window.__pageInfo = function () { return { idx: idx, total: total, step: step }; };
+    window.__pageInfo = function () {
+      return { idx: idx, total: total, step: step, gap: gap,
+               scrollWidth: pg.scrollWidth, height: pg.clientHeight };
+    };
+    window.__pageRecalc = recalc;
     goto(0);
 
-    // 横向滑动翻页
+    // 横向滑动翻页。用 on* 属性而不是 addEventListener：
+    // 反复切翻页模式/重设时不会叠出多份监听，一次滑动只翻一页。
     var sx = 0, sy = 0;
-    pv.addEventListener('touchstart', function (ev) {
-      sx = ev.touches[0].clientX; sy = ev.touches[0].clientY;
-    }, { passive: true });
-    pv.addEventListener('touchend', function (ev) {
+    pv.ontouchstart = function (ev) {
+      var t = ev.touches[0];
+      sx = t.clientX; sy = t.clientY;
+    };
+    pv.ontouchend = function (ev) {
       var dx = ev.changedTouches[0].clientX - sx;
       var dy = ev.changedTouches[0].clientY - sy;
       // 从系统返回手势安全区起手的横滑不抢，交给系统
@@ -2161,8 +2315,22 @@
           goto(want);
         }
       }
-    }, { passive: true });
+    };
+
+    // 字体加载完成后栏宽会变，页数要重算（首次进入阅读页尤其明显）
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () {
+        setTimeout(function () { recalc(true); }, 0);
+      });
+    }
   }
+
+  // 旋转/窗口尺寸变化后重算页数（只在翻页模式、且当前页仍是这块 DOM 时生效）
+  window.addEventListener('resize', function () {
+    if (readPrefs().paging === 'page' && window.__pageRecalc) {
+      window.__pageRecalc(true);
+    }
+  });
   /* ---------- 阅读偏好：字号 / 行距 / 主题 / 标记 / 常亮 / 翻页 ---------- */
   var K_PREFS = 'ar.readprefs';
   var PREFS_DEF = { fs: 19, lh: 2.0, theme: 'light', marks: true, notes: true, hl: true, awake: true, paging: 'scroll', trans: false, transSet: 'ai2', paliZh: true, volTurn: false, anim: true, font: 'default' };
@@ -2174,6 +2342,12 @@
   function savePrefs(p) {
     writeStore(K_PREFS, p);
     applyPrefs();
+    // 翻页模式下字号/行距变化会改变列数，稍后重算页数（当前页尽量不跳）
+    if (p.paging === 'page' && window.__pageRecalc) {
+      setTimeout(function () {
+        if (window.__pageRecalc) window.__pageRecalc(true);
+      }, 0);
+    }
   }
 
   function applyPrefs() {
@@ -2228,12 +2402,12 @@
                   folders: 'ar.folders', itemfolders: 'ar.itemfolder' };
 
   function collectUserData() {
-    var out = { notes: {}, favorites: {}, highlights: {}, translations: {}, palizh: {}, history: [] };
-    Object.keys(UD_MAPS).forEach(function (k) {
+    // 笔记、标签、注释放前面；历史放最后，打开备份先看到笔记与标签。
+    var out = {};
+    ['notes', 'favorites', 'highlights', 'translations', 'palizh',
+     'folders', 'itemfolders'].forEach(function (k) {
       try { out[k] = JSON.parse(localStorage.getItem(UD_MAPS[k]) || '{}'); } catch (e) { out[k] = {}; }
     });
-    // 历史是数组：空表也导成 []，不然导回来会变成 {} 把阅读页弄坏
-    if (!Array.isArray(out.history)) out.history = [];
     try { out.annotations = JSON.parse(localStorage.getItem('ar.ua') || '{}'); } catch (e) { out.annotations = {}; }
     // 别人给的笔记包（註釋來源）也一起备份
     try { out.noteSets = JSON.parse(localStorage.getItem('ar.sets') || 'null') || allSets(); }
@@ -2245,6 +2419,8 @@
         out.posts[key.slice('ar.post.'.length)] = localStorage.getItem(key);
       }
     }
+    // 历史是数组，放最后；histAll() 已按 30 天过滤
+    out.history = histAll();
     return out;
   }
 
@@ -2256,7 +2432,8 @@
       posts: Object.keys(data.posts).length,
       favorites: Object.keys(data.favorites).length,
       highlights: Object.keys(data.highlights).length,
-      translations: Object.keys(data.translations).length
+      translations: Object.keys(data.translations).length,
+      history: data.history.length
     };
     var pack = {
       v: 1, kind: 'agama-userdata',
@@ -2285,7 +2462,7 @@
           var seenH = {};
           curH.forEach(function (x) { if (x) seenH[x.k + '\u0001' + x.kind + '\u0001' + x.t] = 1; });
           d[k].forEach(function (x) {
-            if (!x || !x.k) return;
+            if (!x || !x.k || !histFresh(x)) return;
             var sig = x.k + '\u0001' + x.kind + '\u0001' + x.t;
             if (seenH[sig]) return;
             seenH[sig] = 1;
@@ -2627,7 +2804,7 @@
       v: 1, kind: 'agama-pali-zh', k: k,
       name: (e.h && e.h.nm) || k,
       author: '昭',
-      authorUrl: 'https://gujiduizhao.com:8443/',
+      authorUrl: 'https://gujiduizhao.com/AGAMA',
       license: 'CC BY-NC-SA 4.0',
       note: 'AI 批量初譯，僅供參考；不保證準確。',
       exported: new Date().toISOString(),
@@ -2755,13 +2932,23 @@
   /* ---------- 历史记录 ---------- */
 
   var K_HIST = 'ar.hist';
+  var HIST_DAYS = 30;
   var WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+  /* 只保留最近 30 天；时间坏掉的旧记录也无法判断新旧，一并清掉，
+   * 另有 400 条上限兜底。读取时过滤，pushHist 写回时会顺手把过期项清掉。 */
+  function histFresh(x) {
+    if (!x || !x.t) return false;
+    var ts = Date.parse(x.t);
+    if (isNaN(ts)) return false;
+    return ts >= Date.now() - HIST_DAYS * 86400000;
+  }
 
   function histAll() {
     var a = readStore(K_HIST, []);
     // 备份导入可能把 history 写成对象（旧版 collectUserData 空表就是 {}），
     // 那之后 pushHist() 的 a.unshift 会炸掉整个阅读页——这里兜住，只认数组。
-    return Array.isArray(a) ? a : [];
+    return Array.isArray(a) ? a.filter(histFresh) : [];
   }
 
   function pushHist(k, kind) {
@@ -2940,6 +3127,12 @@
     var d = pendingSlide;
     pendingSlide = 0;
     if (!d || !readPrefs().anim) return;
+    /* 翻页模式下不要给 #readApp 加 transform：
+     * 翻页时正文全在 position:fixed 的 .pageview 里，#readApp 自身几乎无流内容；
+     * 一旦 #readApp 有 transform，它会成为 fixed 子元素的包含块，
+     * .pageview 只剩下 40px 高，多栏被切成几百个小列，页数直接算成几百。
+     * 切经的翻页动效由 .paged 自己的 translateX 过渡承担。 */
+    if (readPrefs().paging === 'page') return;
     var app = document.getElementById('readApp');
     if (!app) return;
     var cls = d > 0 ? 'in-left' : 'in-right';
@@ -2957,6 +3150,10 @@
       if (paliMode && name === 'pali') d.open = true;   // 巴利入口进来默认展开
       d.addEventListener('toggle', function () {
         localStorage.setItem('ar.fold.' + name, d.open ? '1' : '0');
+        // 折叠区展开/收起会增减正文高度，翻页模式下页数要跟着重算
+        if (readPrefs().paging === 'page' && window.__pageRecalc) {
+          window.__pageRecalc(true);
+        }
       });
     });
   }
@@ -2997,8 +3194,6 @@
       location.hash = '#/k/' + encodeURIComponent(k) + (paliMode ? '?via=pali' : '');
       return true;
     };
-    if (readPrefs().paging === 'page') return;
-
     var app = document.getElementById('readApp');
     if (!app) return;
     var sx = 0, sy = 0, moved = false;
@@ -3011,6 +3206,9 @@
       if (Math.abs(t.clientX - sx) > 12) moved = true;
     }, { passive: true });
     app.addEventListener('touchend', function (ev) {
+      // 翻页模式交给横向翻页。这里必须动态判断：原来的写法是在绑定时就 return，
+      // 从设置里切到翻页后旧监听仍在，横滑会同时触发切经与翻页。
+      if (readPrefs().paging === 'page') return;
       if (!moved) return;
       var safe = Math.max(24, Math.round(window.innerWidth * 0.05));
       if (sx < safe || sx > window.innerWidth - safe) return;
@@ -3485,8 +3683,7 @@
       // 经内笔记载体始终是整段：即使从词/句选区进来，也按这一段存
       var ex = excerptOf(b);
       showNoteEditor(e.k, b, function (saved) {
-        var p = document.querySelector('.read-body p[data-b="' + b + '"]');
-        if (p) p.classList.toggle('hasn', saved);
+        refreshSegNote(e.k, b, saved);
       }, ex, fpOf(b));
       bar.classList.remove('on');
     });
@@ -3539,10 +3736,13 @@
   /* 段笔记编辑弹层 */
   function showNoteEditor(k, b, onDone, excerpt, fpv) {
     var old = segNotes(k)[b] || {};
+    var saved = old.h || '';
+    var d = draftFor('seg', k, b, saved, old.updated);
     var mask = document.createElement('div');
     mask.className = 'sheet-mask';
     mask.innerHTML = '<div class="sheet">' +
       '<div class="hd"><span class="t">這一段的筆記</span><span class="x" data-close>×</span></div>' +
+      (d.restored ? draftHintHTML('snDraft') : '') +
       '<textarea id="snTxt" placeholder="寫下你對這一段的理解…"></textarea>' +
       '<div class="btns">' +
       (old.h ? '<span class="btn ghost" id="snDel">刪除</span>' : '') +
@@ -3551,8 +3751,25 @@
       '</div>';
     mountSheet(mask);
     var ta = mask.querySelector('#snTxt');
-    ta.value = old.h || '';
+    ta.value = d.text;
     ta.focus();
+
+    if (d.restored) {
+      var dis = mask.querySelector('#snDraftDiscard');
+      if (dis) dis.onclick = function () {
+        clearDraft('seg', k, b);
+        ta.value = saved;
+        var h = mask.querySelector('#snDraftHint');
+        if (h) h.remove();
+        toast('已捨棄草稿');
+      };
+    }
+    ta.addEventListener('input', function () {
+      if (ta.value === saved) clearDraft('seg', k, b);
+      else putDraft('seg', k, b, {
+        h: ta.value, x: excerpt || '', fp: fpv || '', ts: Date.now()
+      });
+    });
 
     function close() { mask.remove(); }
     mask.addEventListener('click', function (ev) {
@@ -3728,14 +3945,32 @@
 
     function edit() {
       var p = getPost(k) || { h: '' };
-      box.innerHTML = AR.conv('<textarea id="postTxt" placeholder="寫下你的感悟，或記下想再查的地方…"></textarea>' +
+      var saved = p.h || '';
+      var d = draftFor('post', k, null, saved, p.updated);
+      box.innerHTML = AR.conv(
+        (d.restored ? draftHintHTML('postDraft') : '') +
+        '<textarea id="postTxt" placeholder="寫下你的感悟，或記下想再查的地方…"></textarea>' +
         '<div class="btns">' +
         (p.h ? '<span class="btn ghost" id="postDel">刪除</span>' : '') +
         '<span class="btn" id="postCancel">取消</span>' +
         '<span class="btn pri" id="postSave">儲存</span></div>');
       var t = document.getElementById('postTxt');
-      t.value = p.h || '';
+      t.value = d.text;
       t.focus();
+      if (d.restored) {
+        var dis = document.getElementById('postDraftDiscard');
+        if (dis) dis.onclick = function () {
+          clearDraft('post', k, null);
+          t.value = saved;
+          var h = document.getElementById('postDraftHint');
+          if (h) h.remove();
+          toast('已捨棄草稿');
+        };
+      }
+      t.addEventListener('input', function () {
+        if (t.value === saved) clearDraft('post', k, null);
+        else putDraft('post', k, null, { h: t.value, ts: Date.now() });
+      });
       document.getElementById('postCancel').onclick = function () {
         box.innerHTML = AR.conv(postInner(k));
         bindPost(k);
@@ -4069,7 +4304,38 @@
       '<h2>更新日誌</h2>' +
       '<p class="dim">只列用戶可見的變動；安裝包與資源包見「獲取更新及資源包」。</p>' +
 
-      '<h2>1.0.1</h2>' +
+      // 新版本加在最上面，并把 open 移到最新一版；旧版默认收起。
+      '<details class="clog" open>' +
+      '<summary><span class="clog-v">1.0.3</span></summary>' +
+      '<ul>' +
+      '<li>左右翻頁進下一經不再多出空白頁；切換翻頁模式後橫滑不會同時跳經；字號、行距改變會重算頁數。</li>' +
+      '<li>閱讀頁頂部固定顯示經號（左上角，翻頁時每一頁都在）。</li>' +
+      '<li>對讀修正：SN.35.90 改配 SA.227；SA.277 只保留 SN.35.97 / SN.35.98。</li>' +
+      '<li>內置字體補上擴展 B 生僻字、巴利變音與箭頭符號；常用字子集一併重建。</li>' +
+      '<li>閱讀歷史只保留最近 30 天；完整備份把歷史放在最後。</li>' +
+      '<li>今日一句最多佔原來三行的高度：先降字號，再收行距。</li>' +
+      '<li>筆記草稿自動保存：切走、重開、重載都不丟；保存或刪除段後筆記立即更新。</li>' +
+      '<li>深色模式下搜索命中詞改柔和，夜裡不刺眼。</li>' +
+      '<li>軟件內更新日誌補上 1.0.2 並按版本折疊；昭同修網站改為 gujiduizhao.com/AGAMA。</li>' +
+      '</ul>' +
+      '</details>' +
+
+      '<details class="clog">' +
+      '<summary><span class="clog-v">1.0.2</span></summary>' +
+      '<ul>' +
+      '<li>深色模式下「剛才讀的是這一經」的高亮更明顯：仍是 1px 細框，另加淡底色與經號換色。</li>' +
+      '<li>回到目錄時一定把那一格滾進螢幕：相應很長的部（如諸天相應）不再停在段首、把高亮甩在螢幕外；順帶修掉字型載入稍晚時定位「差一點」的問題。</li>' +
+      '<li>「相應」選擇清單打開時自動停在目前所在相應，並高亮該列。</li>' +
+      '<li>深色模式下的高亮（整段或字詞）不再用淺色米黃底，換成低飽和琥珀，夜裡讀不刺眼。</li>' +
+      '<li>修正巴利直譯把正常段落的漢譯誤判成「原文此處為縮略語」而藏起來的問題（實測影響 100 多段，含「如是我聞」開頭與「第九」這類序數標題）。</li>' +
+      '<li>巴利原文真正只是 Dutiyapeyyālo. 一類縮略語的 4 段，漢譯照常顯示，末尾加一句說明。</li>' +
+      '<li>完整備份恢復補上「別人給的註釋套」：換機／重裝匯入後不再遺失。</li>' +
+      '<li>修復匯入備份後所有經文都打不開的問題（備份裡的歷史記錄形狀不對會弄壞閱讀頁）。</li>' +
+      '</ul>' +
+      '</details>' +
+
+      '<details class="clog">' +
+      '<summary><span class="clog-v">1.0.1</span></summary>' +
       '<ul>' +
       '<li>巴利語卡片：修正首行縮進，經號標題移到 AI 直譯說明下方；巴利入口的漢譯卡片可收起。</li>' +
       '<li>修復「跟隨系統」深色／淺色主題不生效。</li>' +
@@ -4082,11 +4348,14 @@
       '<li>註釋／詞釋彈層不再顯示經文校勘說明。</li>' +
       '<li>從設置返回首頁時保持原滾動位置；閱讀頁仍從頂部開始。</li>' +
       '</ul>' +
+      '</details>' +
 
-      '<h2>1.0.0</h2>' +
+      '<details class="clog">' +
+      '<summary><span class="clog-v">1.0.0</span></summary>' +
       '<ul>' +
       '<li>首個公開源碼版本；相應部巴利逐段直譯、南北傳對讀、筆記/高亮/收藏、離線全文搜索。</li>' +
       '</ul>' +
+      '</details>' +
       '</div>'
     );
     document.title = AR.conv('更新日誌 · 掌上阿含');
@@ -4259,9 +4528,15 @@
 
       '<h2>字型</h2>' +
       '<p>Noto Serif SC（Google / notofonts），<b>SIL Open Font License 1.1</b>。' +
-      '依本程式實際用字裁切為子集（兩個字重，各約 1.3 MB），裁切屬改作，OFL 允許並要求隨附許可全文。</p>' +
-      '<details class="ofl"><summary>字型授權全文（SIL OFL 1.1）</summary>' +
+      '依本程式實際用字裁切為子集（兩個字重，各約 1.3 MB），裁切屬改作，OFL 允許並要求隨附許可全文。' +
+      '另用 HanaMinA/B（GlyphWiki Project）與 Noto Sans Math（Noto Project）' +
+      '為擴展 B、巴利變音與箭頭等缺字補了三個小字集（合共約 28 KB），三者都是 <b>OFL 1.1</b>。</p>' +
+      '<details class="ofl"><summary>Noto 字型授權全文（SIL OFL 1.1）</summary>' +
       '<pre id="oflText">載入中…</pre></details>' +
+      '<details class="ofl"><summary>HanaMin 字型授權全文（SIL OFL 1.1）</summary>' +
+      '<pre id="oflText2">載入中…</pre></details>' +
+      '<details class="ofl"><summary>Noto Sans Math 字型授權全文（SIL OFL 1.1）</summary>' +
+      '<pre id="oflText3">載入中…</pre></details>' +
 
       '<h2>本離線版對內容做了什麼</h2>' +
       '<ul>' +
@@ -4280,14 +4555,14 @@
       '<tr><th>內容</th><td>莊春江工作站　經文、譯文、註釋、巴利原文</td></tr>' +
       '<tr><th>翻譯包</th><td>昭 同修　古今對譯、巴利直譯　<b>CC BY-NC-SA 4.0</b></td></tr>' +
       '<tr><th>圖片</th><td>Wikimedia Commons 諸位作者（見上）</td></tr>' +
-      '<tr><th>字型</th><td>Noto Serif SC　Google / notofonts（OFL 1.1）</td></tr>' +
+      '<tr><th>字型</th><td>Noto Serif SC　Google / notofonts；HanaMin 擴展字　GlyphWiki Project；Noto Sans Math　Noto Project（OFL 1.1）</td></tr>' +
       '</table>' +
       '<p class="dim">程式源碼以 AGPL-3.0 提供，隨發佈一併附上（AGPL 第 6 條的要求）。' +
       '翻譯包由昭 同修提供，以 CC BY-NC-SA 4.0 約束；引用時請保留署名與出處。</p>' +
 
       '<h2>同修網站</h2>' +
       '<p>昭 同修 另製作佛經線上閱讀網站「古籍對照」，歡迎在瀏覽器打開：</p>' +
-      '<p><b>https://gujiduizhao.com:8443/</b>　<span class="ref" id="copySite">複製網址</span></p>' +
+      '<p><b>https://gujiduizhao.com/AGAMA</b>　<span class="ref" id="copySite">複製網址</span></p>' +
       '<p class="dim">本程式離線，不直接聯網；請複製網址到瀏覽器。</p>' +
 
       '<h2>聯絡</h2>' +
@@ -4299,21 +4574,23 @@
     document.title = AR.conv('授權與致謝 · 掌上阿含');
     var cp = document.getElementById('copySite');
     if (cp) cp.addEventListener('click', function () {
-      copyText('https://gujiduizhao.com:8443/', '已複製網址');
+      copyText('https://gujiduizhao.com/AGAMA', '已複製網址');
     });
-    loadOFL();
+    loadOFL('oflText', 'assets/OFL.txt');
+    loadOFL('oflText2', 'assets/OFL-HanaMin.txt');
+    loadOFL('oflText3', 'assets/OFL-NotoSansMath.txt');
   }
 
-  function loadOFL() {
-    var pre = document.getElementById('oflText');
+  function loadOFL(id, path) {
+    var pre = document.getElementById(id);
     if (!pre) return;
-    fetch('assets/OFL.txt').then(function (r) {
+    fetch(path).then(function (r) {
       if (!r.ok) throw new Error(r.status);
       return r.text();
     }).then(function (t) {
       pre.textContent = t;
     }).catch(function () {
-      pre.textContent = '（許可全文讀取失敗，請見發佈包內的 assets/OFL.txt）';
+      pre.textContent = '（許可全文讀取失敗，請見發佈包內的 ' + path + '）';
     });
   }
 
@@ -5165,6 +5442,7 @@
   AR.boot().then(function () {
     return loadCustomFont();
   }).then(function () {
+    purgeDrafts();
     route();
     bootEl.classList.add('hide');
     setTimeout(function () { bootEl.remove(); }, 400);

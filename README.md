@@ -1,12 +1,12 @@
 # 掌上阿含
 
-一部**离线**的阿含经读本。汉译经文为主，南北传对读、巴利原文、词条注释随手可得。
+一部**离线**的阿含经读本。漢譯经文为主，南北传对读、巴利原文、词条注释随手可得。
 
 ## 它是什么
 
 - **只收经文与注释**。没有故事选、没有导读文章，翻开就是经。
 - 数据来自莊春江「阿含經」網站（[agama.buddhason.org](https://agama.buddhason.org)）。
-- 汉译四阿含与别译杂阿含，全站 **7,570 经**（7,564 页；4 个合并页覆盖 6 经）。
+- 漢譯四阿含与别译杂阿含，全站 **7,570 经**（7,564 页；4 个合并页覆盖 6 经）。
 
 ## 特点
 
@@ -20,24 +20,10 @@
 | **读得下去** | 字号行距可调、深色模式、左右翻页、音量键翻页 |
 | **笔记只在本机** | 高亮与笔记都存在设备上，不上传、不联网 |
 
-## 获取安装包与更新
+## 安装
 
-本应用离线，不会自动检查更新。安装包、翻译包和更新说明放在 GitHub Releases：
-
-<https://github.com/Yoshikichi99/agama-reader-public/releases>
-
-## 从源码构建
-
-运行数据已经包含在 `前端/proto/data`，不需要先跑数据清洗脚本。
-
-测试环境与完整步骤见 [`BUILDING.md`](BUILDING.md)。最短路径：
-
-```bash
-cd 构建/Android
-gradle :app:assembleDebug
-```
-
-需要 JDK 17、Android SDK 35、Gradle 8.9；仓库不包含维护者的 release 签名钥匙。
+安装包与更新说明见 [Releases](https://github.com/Yoshikichi99/agama-reader-public/releases)。
+不上架应用商店；Android 直接安装 APK。
 
 ## 许可
 
@@ -50,25 +36,35 @@ gradle :app:assembleDebug
 | 巴利逐段直译（相应部） | **CC BY-NC-SA 4.0**（昭 同修提供，AI 批量处理） |
 | 古今对译 / 翻译包 | **CC BY-NC-SA 4.0**（昭 同修提供） |
 | 项目说明文档 | CC BY 4.0 |
-| 内置字体 | SIL OFL 1.1（Noto Serif SC 子集） |
+| 内置字体 | SIL OFL 1.1（Noto Serif SC 子集；HanaMin / Noto Sans Math 补扩展字） |
 
 经文与注释的著作权属莊春江，本项目只是重排与呈现，**不因此改变其授权**。
-详见 [LICENSE](LICENSE)、[`文档/授权与来源.md`](文档/授权与来源.md) 与
-[`文档/使用协议.md`](文档/使用协议.md)。
+详见 [LICENSE](LICENSE)、`文档/授权与来源.md` 与 [`文档/使用协议.md`](文档/使用协议.md)。
 
 > **巴利直译声明**：相应部的巴利逐段直译为 **AI 批量处理结果**，由 **昭 同修** 提供，
 > 未经逐句人工校对，**不保证准确**，仅供参考。如有同修愿意提供质量更可靠的对译本，
 > 欢迎通过授权页的联系方式告知。
 
-> 昭 同修 的佛经在线阅读网站：[古籍对照](https://gujiduizhao.com:8443/)
+> 昭 同修 的佛经在线阅读网站：[古籍对照](https://gujiduizhao.com/AGAMA)
 
-## 源码范围
+## 构建
 
-公开仓库包含：
+运行数据已随源码提供在 `前端/proto/data`，不需要先跑清洗或打包脚本。
 
-- Android 工程与前端源码；
-- 实际运行数据（`前端/proto/data`）；
-- 图片、字体子集与 OFL 许可；
-- 授权、使用协议与数据结构文档。
+测试过的构建环境：
 
-不包含维护者的签名钥匙、内部调试脚本、原始素材和数据清洗/校对工具。
+- JDK 17
+- Android SDK Platform 35 / Build-Tools 35.0.0
+- Gradle 8.9
+- Android Gradle Plugin 8.7.3（`构建/Android/build.gradle` 已声明）
+
+```bash
+cd 构建/Android
+gradle :app:assembleDebug
+```
+
+仓库不提供维护者的 release 签名钥匙。要构建 release，请配置自己的
+`signingConfig`；`app/build.gradle` 检测到外部 `agama-keystore.properties`
+时会自动签名，没有钥匙则只能构建 debug 或未签名 release。
+
+更细的版本说明见 [`BUILDING.md`](BUILDING.md)。

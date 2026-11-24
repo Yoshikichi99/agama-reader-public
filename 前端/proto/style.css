@@ -25,6 +25,51 @@
   font-display: swap;
 }
 
+/* 扩展字补字：HanaMinA/B 只取内置字体缺的字（OFL 1.1，见 素材\字体\_来源.md）。
+ * 拆成两个家族，放进 --serif 栈里，缺字时浏览器自动落到这里。 */
+@font-face {
+  font-family: "ABA Serif ExtB";
+  src: url("assets/serif-ext-b.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ABA Serif ExtB";
+  src: url("assets/serif-ext-b.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ABA Serif ExtA";
+  src: url("assets/serif-ext-a.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ABA Serif ExtA";
+  src: url("assets/serif-ext-a.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ABA Serif ExtS";
+  src: url("assets/serif-ext-sym.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ABA Serif ExtS";
+  src: url("assets/serif-ext-sym.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --ink: #2E2622;
   --ink2: #5B4C42;
@@ -39,11 +84,12 @@
   --azure: #3B5568;
   --jade: #5E8A80;
 
-  --serif: "ABA Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "SimSun", Georgia, serif;
+  --serif: "ABA Serif", "ABA Serif ExtB", "ABA Serif ExtA", "ABA Serif ExtS", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "SimSun", Georgia, serif;
   --sans: -apple-system, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
 
   --pad: 20px;
   --maxw: 720px;
+  --runhead-h: 22px;
 
   /* 阅读排版，由「阅读设置」改 */
   --read-fs: 19px;
@@ -246,12 +292,23 @@ a { color: inherit; text-decoration: none; }
 .dir-row.sub .nm { padding-left: 14px; color: var(--ink2); font-size: 14.5px; }
 
 /* ---------- 阅读页 ---------- */
-.read-head {
-  padding: 26px var(--pad) 6px;
-  border-bottom: 1px solid transparent;
+/* 固定经号条：放在顶部安全区左上角，每页都在，不随正文滚动 */
+.runhead {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 25;
+  height: var(--runhead-h);
+  display: flex; align-items: center; justify-content: flex-start;
+  padding: 0 var(--pad);
+  background: var(--paper);
+  pointer-events: none;
 }
-.read-head .no {
-  font-size: 11px; color: var(--ochre); letter-spacing: .16em; margin-bottom: 8px;
+.runhead .no {
+  font-size: 11px; color: var(--ochre); letter-spacing: .16em;
+}
+.app.read { padding-top: var(--runhead-h); }
+/* 总顶距保持原来的 26px：22 的经号条 + 4 的标题内边距 */
+.read-head {
+  padding: 4px var(--pad) 6px;
+  border-bottom: 1px solid transparent;
 }
 .read-head h1 {
   font-family: var(--serif);
@@ -584,6 +641,12 @@ body.pali-first details.sec.fold[data-fold="pali"] .sec-b .pali p.pz {
 .hit .n small { color: var(--ochre); font-size: 11px; margin-left: 8px; letter-spacing: .06em; }
 .hit .s { font-size: 13.5px; color: var(--ink3); line-height: 1.8; font-family: var(--serif); }
 .hit .s em { font-style: normal; color: var(--ochre-d); background: #F3E6D4; padding: 0 1px; }
+/* 深色下搜索命中词沿用浅色米黄会整片发亮，和阅读页高亮是同一个毛病：
+   换成阅读页那档 #3F311F，字色仍是 --ochre-d（深色下自动变 #D49A76），足够认出来又不刺眼。 */
+body.dark .hit .s em,
+html.dark .hit .s em {
+  background: #3F311F;
+}
 
 /* ---------- 弹层 ---------- */
 .sheet-mask {
@@ -714,6 +777,24 @@ body.sheet-open, html.sheet-open { overflow: hidden; }
 .lic ul { margin: 0 0 12px; padding-left: 1.2em; }
 .lic li { margin-bottom: 6px; }
 .lic .tip { font-size: 12.5px; color: var(--ink3); border-left: 2px solid var(--line); padding-left: 12px; }
+
+/* 更新日誌：按版本折叠，最新一版默认展开 */
+.lic details.clog { margin: 0; border-bottom: 1px solid var(--line); }
+.lic details.clog > summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center;
+  padding: 18px 0 10px;
+  font-family: var(--serif); font-size: 16px; font-weight: 600;
+  color: var(--ochre-d); letter-spacing: .06em;
+}
+.lic details.clog > summary::-webkit-details-marker { display: none; }
+.lic details.clog > summary::after {
+  content: "›"; margin-left: auto; color: var(--ink4);
+  font-family: var(--sans); font-weight: 400; font-size: 18px;
+  transform: rotate(90deg); transition: transform .2s;
+}
+.lic details.clog[open] > summary::after { transform: rotate(-90deg); }
+.lic details.clog > ul { margin: 4px 0 16px; }
 /* 获取更新：离线应用里只展示地址，由用户自己复制到浏览器 */
 .upd-box {
   border: 1px solid var(--line); border-radius: 6px;
@@ -801,6 +882,17 @@ body.sheet-open, html.sheet-open { overflow: hidden; }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .lrow .meta { font-size: 11px; color: var(--ink4); letter-spacing: .04em; margin-top: 6px; }
+
+/* 笔记草稿恢复提示（切页/返回后重新打开编辑器时出现） */
+.draft-hint {
+  font-size: 12px; line-height: 1.6; color: var(--ochre-d);
+  background: var(--ground); border: 1px solid var(--line);
+  border-radius: 4px; padding: 6px 8px; margin: 0 0 8px;
+}
+.draft-hint span {
+  float: right; color: var(--azure); text-decoration: underline;
+  cursor: pointer; padding-left: 12px;
+}
 
 .lgroup { border-bottom: 1px solid var(--line); }
 .lg-h {
@@ -1248,7 +1340,7 @@ body.no-trans .read-body .tr { display: none; }
 
 body.paged-mode { overflow: hidden; }
 body.paged-mode .pageview {
-  position: fixed; inset: 0; overflow: hidden; z-index: 1;
+  position: fixed; inset: var(--runhead-h) 0 0 0; overflow: hidden; z-index: 1;
 }
 body.paged-mode .paged {
   height: 100%;

@@ -27,8 +27,8 @@ android {
         applicationId "io.github.yoshikichi99.agamareader"
         minSdk 24
         targetSdk 35
-        versionCode 4
-        versionName "1.0.2"
+        versionCode 5
+        versionName "1.0.3"
     }
 
     // 03 自己的 release 钥匙（与 02 的 zcj-release.jks 分开）。
